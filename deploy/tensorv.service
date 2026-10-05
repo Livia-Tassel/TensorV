@@ -1,0 +1,39 @@
+[Unit]
+Description=TensorV isolated execution gateway
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=tensorv
+Group=tensorv
+SupplementaryGroups=docker
+WorkingDirectory=/opt/tensorv/current
+EnvironmentFile=/etc/tensorv/public.env
+Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/nonexistent
+ExecStart=/usr/bin/python3 -m tensorv.public_server --origin ${TENSORV_ORIGIN} --port 8765 --trust-proxy-loopback --image ${TENSORV_IMAGE} --max-sessions 8 --session-ttl 900 --concurrency 1 --max-connections 24 --timeout 20
+ExecStopPost=/usr/bin/python3 /opt/tensorv/current/deploy/cleanup-sandboxes.py --all
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillMode=control-group
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=1024
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

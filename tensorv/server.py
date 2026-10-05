@@ -16,8 +16,8 @@ def worker_entry(connection):
     # Delayed import keeps the HTTP server responsive during PyTorch startup.
     try:
         from tensorv.engine import worker
-    except ImportError as exc:
-        connection.send({"ready": False, "message": f"PyTorch 导入失败：{exc}。请运行 ./start.sh 安装依赖。"})
+    except (ImportError, OSError) as exc:
+        connection.send({"ready": False, "message": f"PyTorch 导入失败：{exc}。请安装 requirements.txt 中的依赖后重试。"})
         connection.close()
         return
     worker(connection)
@@ -76,7 +76,7 @@ class Runner:
                 if not result["ok"]:
                     raise ValueError(result["message"])
                 return result["data"]
-            except (TimeoutError, EOFError, BrokenPipeError, ConnectionResetError):
+            except (OSError, EOFError):
                 self.stop()
                 raise
 
@@ -119,10 +119,15 @@ class Handler(BaseHTTPRequestHandler):
         if host not in ("localhost", "127.0.0.1"):
             self.json_response(403, {"message": "仅接受本机 Host。"})
             return
-        if origin and urlparse(origin).netloc != self.headers.get("Host"):
+        try:
+            same_origin = not origin or (urlparse(origin).scheme == "http"
+                                        and urlparse(origin).netloc == self.headers.get("Host"))
+        except ValueError:
+            same_origin = False
+        if not same_origin:
             self.json_response(403, {"message": "仅接受同源请求。"})
             return
-        if "application/json" not in self.headers.get("Content-Type", ""):
+        if self.headers.get_content_type() != "application/json":
             self.json_response(415, {"message": "请使用 application/json。"})
             return
         try:
@@ -148,10 +153,10 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response(408, {"message": str(exc)})
         except (ValueError, TypeError, KeyError, IndexError) as exc:
             self.json_response(400, {"message": str(exc)})
-        except (EOFError, BrokenPipeError, ConnectionResetError):
+        except (EOFError, OSError):
             try:
                 self.json_response(503, {"message": "工作进程中断，请重新运行。"})
-            except BrokenPipeError:
+            except OSError:
                 pass
 
 

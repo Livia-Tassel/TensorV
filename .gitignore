@@ -5,3 +5,8 @@ dist/
 .DS_Store
 *.log
 test-results/
+.local-deploy/
+.env
+.env.*
+!.env.example
+playwright-report/

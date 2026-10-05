@@ -1,78 +1,84 @@
 # TensorV
 
-一个在本机运行的 PyTorch Tensor 教学与探索工具：左侧写 Python，右侧查看每条语句执行后的真实形状、数值和内存布局。
+TensorV 是面向 PyTorch 的张量检查工具。它执行 Python 代码，记录语句级张量快照，并在同一工作区中展示数值、形状、步长和底层存储关系。
 
-## 启动
+适用于算子行为验证、张量布局调试和短程序演示。当前执行环境以 CPU 为主；它不提供训练任务管理、分布式计算或通用 Notebook 服务。
 
-需要 Python 3.10+（须有对应 PyTorch wheel）和 Node.js 20.19+ 或 22.12+。首次安装依赖需要联网；安装后编辑器与执行服务可离线运行。
+## 在线访问
 
-```sh
-./start.sh
+[打开 TensorV 工作区](https://tensorv.43.135.182.151.nip.io)
+
+公共演示实例通过 HTTPS 访问，Python 代码在服务器上的独立 gVisor 沙箱中执行，访问者无需安装环境或保持本地服务运行。当前采用单执行并发，单次执行默认限制为 20 秒、1 核 CPU 和 512 MiB 内存，并设置访问频率和会话限额；繁忙时请稍后重试。
+
+脚本保存在访问者的浏览器中，运行时提交到服务器。不要向公共实例提交密钥或机密数据。需要本机执行或独立资源时，可按下文进行本地部署，或参照[服务器部署](docs/server-deployment.md)自行运行。
+
+![TensorV 工作区](docs/assets/workspace.png)
+
+## 功能
+
+| 工作区 | 能力 |
+| --- | --- |
+| 代码编辑 | Python 语法高亮、多脚本管理、自动保存、文件导入导出、手动或自动运行 |
+| 执行检查 | 语句级轨迹、前后对照、步骤回放、异常位置及标准输出 |
+| 张量浏览 | 高维切片、二维分页、数值精度设置、热力图、坐标锁定 |
+| 存储分析 | shape、dtype、stride、storage offset、连续性和共享存储关联 |
+| 数据分析 | 快照统计、当前切片分布、CSV / JSON 导出 |
+| 示例库 | 13 个可编辑示例，覆盖形状变换、广播、归约、矩阵乘法、内存视图与自动求导 |
+
+## 本地运行
+
+需要 Git、Python 3.10 或更高版本，以及 Node.js 20.19+ 或 22.12+。Python 版本和平台须有可安装的 PyTorch 发行包。首次安装需要网络访问。
+
+**Windows PowerShell**
+
+```powershell
+git clone https://github.com/Livia-Tassel/TensorV.git
+cd TensorV
+.\start.ps1
 ```
 
-打开 http://127.0.0.1:8765 。也可用 `./start.sh --port 9000` 指定端口。
-
-手动安装和启动：
+**macOS / Linux**
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-npm ci
-npm run build
-.venv/bin/python -m tensorv.server
+git clone https://github.com/Livia-Tassel/TensorV.git
+cd TensorV
+sh start.sh
 ```
 
-开发时用两个终端：
+访问 [http://127.0.0.1:8765](http://127.0.0.1:8765)。启动脚本创建虚拟环境、补齐缺失依赖、构建前端并启动 Python 服务；按 `Ctrl+C` 停止。
 
-```sh
-.venv/bin/python -m tensorv.server
-```
+使用期间需要保持 **Python 服务运行**。前端构建完成后由 Python 提供静态文件，日常运行不需要启动 Vite，也不需要常驻 Node.js 进程。关闭服务后，浏览器不能执行代码或请求新的切片。
 
-```sh
-npm run dev
-```
+本地模式运行当前用户信任的 Python 代码，拥有该用户的文件和网络权限。不要将本地模式通过端口转发或反向代理公开。面向其他用户的部署请使用独立的公共执行模式，参见[服务器部署](docs/server-deployment.md)。
 
-Vite 的开发页面通常位于 http://127.0.0.1:5173 ，API 会代理到 8765。
+安装过程、手动启动、更新和故障排查见[本地部署](docs/local-deployment.md)。
 
-## 如何使用
+## 使用
 
-- 编辑停止 650 ms 后自动执行；可关闭自动运行，使用运行按钮或 `⌘/Ctrl + Enter`。
-- 点击轨迹中的步骤，或将编辑器光标移到已执行的语句，回看对应状态。
-- 用变量选择器查看不同变量及 `split` 等操作返回的 Tensor 列表。
-- 选择行、列维度，使用滑块或数字输入浏览其他维度的索引。每页最多显示 24 × 24 个元素，大维度可以翻页。
-- 悬停格子查看完整坐标。共享底层存储的格子联动高亮；`unfold` 的重叠元素会同时高亮。
-- 前后形状一致时，用橙色边框标出同坐标上数值改变的元素。
-- 查看 shape、stride、连续性、存储编号和偏移量，区分视图与复制。
-- 代码没有写完时，保留上一次成功画面；运行中出错时，显示出错前已经完成的步骤。
-- 内置 `transpose`、`reshape/view`、`clamp`、`split`、`unfold`、五维切片和原地修改示例。
-- 草稿存储于浏览器 localStorage，可下载为 `.py` 文件。
+1. 新建脚本，或从侧栏选择示例、导入 `.py` 文件。
+2. 点击“运行”，或使用 `Ctrl / ⌘ + Enter`。自动运行可在顶部开关中控制。
+3. 在执行步骤中选择语句，再选择需要检查的 Tensor。
+4. 在张量画布中调整维度和索引；切换到存储映射或数值统计继续分析。
+5. 下载代码，或将当前切片导出为 CSV / JSON。
 
-## 执行与边界
+脚本保存在当前浏览器的本地存储中，不会在不同设备间自动同步。清除站点数据会删除这些脚本；需保留的代码应下载为文件。运行时，代码会发送到当前连接的执行服务。
 
-后端直接运行真实 PyTorch，前端不会模拟算子。每次从头执行短程序，随机种子重置为 0。默认用 CPU；首次运行需等待 PyTorch 导入，之后复用工作进程。
+操作说明和数据语义见[用户指南](docs/user-guide.md)。
 
-在顶层完整语句结束后记录状态。支持多行语句、函数和循环执行，但初版不逐次记录函数内部或每个循环迭代。表达式产生的 Tensor 以“结果”展示；列表、元组和字典中的 Tensor 会展开为变量路径。
+## 部署与运行边界
 
-历史数值使用独立快照，原地操作不会改变之前的画布。存储编号描述本次运行中原始 Tensor 的共享关系，格子中的存储位置是以元素为单位的偏移；联动高亮仅在存储编号和 dtype 都相同时进行。
+TensorV 包含浏览器前端和 Python 执行服务，不能仅通过静态网页托管提供完整功能。本地运行服务位于用户计算机；服务器部署后，服务由服务器持续运行，访问者只需浏览器。
 
-每个 Tensor 最多保存 100,000 个元素，历史数值内存预算为 64 MB，最多记录 128 步及每步 32 个 Tensor。超过大小或内存限制时保留元数据。执行默认超时 8 秒并重置工作进程。普通稠密 Tensor 支持数值浏览；稀疏和 meta Tensor 只显示元数据。
+本地模式每个 Tensor 最多保留 100,000 个元素，单次执行的历史数值预算为 64 MiB，最多记录 128 步、每步 32 个 Tensor。公共模式采用更严格的资源和快照限制。界面每页最多展示 24 × 24 个元素。详见[架构与执行模型](docs/architecture.md)。
 
-这是用于本人可信代码的本地工具。独立工作进程用于超时和状态恢复，并非安全沙箱；Python 代码仍具有当前用户的文件与网络权限。服务仅监听 `127.0.0.1`，不应暴露到公网。
+## 文档
 
-## 验证
-
-```sh
-npm run build
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-测试覆盖 transpose 的真实数值与 stride、unfold 重叠、原地修改的历史快照、reshape 复制与 view 报错、split 偏移、高维切片、分页、标量、空 Tensor、特殊数值、随机可重复性，以及超时后的恢复。
-
-## 结构
-
-- `src/`：CodeMirror Python 编辑器、执行轨迹、切片画布和示例。
-- `tensorv/engine.py`：AST 语句插桩、真实执行、快照与切片。
-- `tensorv/server.py`：Python 标准库 HTTP 服务和独立工作进程。
-- `tests/`：执行与快照语义测试。
-
-PyTorch 视图语义参考：[Tensor Views](https://docs.pytorch.org/docs/stable/tensor_view.html)。
+| 文档 | 内容 |
+| --- | --- |
+| [本地部署](docs/local-deployment.md) | 环境准备、启动、更新、卸载与常见问题 |
+| [用户指南](docs/user-guide.md) | 脚本管理、执行检查、切片、统计及导出 |
+| [服务器部署](docs/server-deployment.md) | 公共服务的执行隔离、安装与入口配置 |
+| [运行维护](docs/operations.md) | 健康检查、日志、更新、故障处理与恢复 |
+| [架构与执行模型](docs/architecture.md) | 组件、数据流、接口与能力边界 |
+| [开发指南](CONTRIBUTING.md) | 开发环境、验证和变更提交 |
+| [安全说明](SECURITY.md) | 信任边界、公开部署要求与问题报告 |

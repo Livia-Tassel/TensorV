@@ -1,9 +1,10 @@
 import json
+import math
 import unittest
 
 import torch
 
-from tensorv.engine import Engine
+from tensorv.engine import Engine, json_number
 from tensorv.server import Runner
 
 
@@ -91,6 +92,38 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.tensor(result, "x")["slice"]["values"], [["nan", "inf", "-inf"]])
         self.assertEqual(self.tensor(result, "z")["slice"]["values"], [[True, False]])
 
+    def test_large_integer_transport_preserves_exact_values_and_bool(self):
+        safe = 2 ** 53 - 1
+        for value in (0, safe, -safe):
+            with self.subTest(value=value):
+                self.assertEqual(json_number(value), value)
+                self.assertIs(type(json_number(value)), int)
+        for value in (safe + 1, -(safe + 1), 2 ** 63 - 1, -(2 ** 63)):
+            with self.subTest(value=value):
+                self.assertEqual(json_number(value), str(value))
+        self.assertIs(json_number(True), True)
+        self.assertIs(json_number(False), False)
+
+    def test_large_int64_snapshots_survive_browser_json_roundtrip(self):
+        code = "x = torch.tensor([9007199254740991, 9007199254740993, -9007199254740993, 9223372036854775807, -9223372036854775808], dtype=torch.int64)\nb = torch.tensor([True, False])"
+        result = self.run_code(code)
+        # Browser JSON.parse uses float64 for JSON numbers. Simulate that here
+        # to ensure every original integer can be recovered exactly on export.
+        browser_result = json.loads(json.dumps(result, allow_nan=False), parse_int=float)
+        values = self.tensor(browser_result, "x")["slice"]["values"][0]
+        expected = [9007199254740991, 9007199254740993, -9007199254740993,
+                    9223372036854775807, -9223372036854775808]
+        self.assertEqual([int(value) for value in values], expected)
+        self.assertIsInstance(values[0], float)
+        self.assertTrue(all(isinstance(value, str) for value in values[1:]))
+        self.assertEqual(self.tensor(browser_result, "b")["slice"]["values"], [[True, False]])
+        x = self.tensor(result, "x")
+        requested = self.engine.slice({"id": x["id"], "col_start": 1})
+        browser_slice = json.loads(json.dumps(requested, allow_nan=False), parse_int=float)
+        self.assertEqual([int(value) for value in browser_slice["values"][0]], expected[1:])
+        exported = json.loads(json.dumps(browser_slice, allow_nan=False), parse_int=float)
+        self.assertEqual(exported["values"], browser_slice["values"])
+
     def test_multiline_loop_function_stdout_and_future_import(self):
         code = "from __future__ import annotations\nimport torch\nx = torch.tensor(\n [1, 2, 3]\n)\ndef f(a):\n return a * 2\nfor i in range(2):\n x = f(x)\nprint('done')"
         result = self.run_code(code)
@@ -129,9 +162,93 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(x["available"])
         self.assertEqual(x["shape"], [100001])
         self.assertIn("100,000", x["warning"])
+        self.assertFalse(x["stats"]["supported"])
+        self.assertEqual(x["stats"]["count"], 100001)
+
+    def test_stats_cover_full_snapshot_and_logical_bytes(self):
+        result = self.run_code("x = torch.arange(60, dtype=torch.int64)\ny = x[:1].expand(100)")
+        x, y = self.tensor(result, "x"), self.tensor(result, "y")
+        stats = x["stats"]
+        self.assertEqual(len(x["slice"]["values"][0]), 24)
+        self.assertEqual(stats["count"], 60)
+        self.assertEqual(stats["finite_count"], 60)
+        self.assertEqual(stats["nonfinite_count"], 0)
+        self.assertEqual((stats["min"], stats["max"], stats["mean"]), (0, 59, 29.5))
+        self.assertAlmostEqual(stats["std"], math.sqrt((60 ** 2 - 1) / 12))
+        self.assertEqual(x["element_size"], 8)
+        self.assertEqual(x["nbytes"], 480)
+        self.assertEqual(y["storage"], x["storage"])
+        self.assertEqual(y["nbytes"], 800)
+        self.assertEqual(y["stats"]["std"], 0)
+
+    def test_stats_exclude_nonfinite_and_support_bool(self):
+        result = self.run_code("x = torch.tensor([float('nan'), float('inf'), -float('inf'), 1., 3.])\ny = torch.tensor([True, False, True, False])")
+        stats = self.tensor(result, "x")["stats"]
+        self.assertTrue(stats["supported"])
+        self.assertEqual((stats["count"], stats["finite_count"], stats["nonfinite_count"]), (5, 2, 3))
+        self.assertEqual((stats["min"], stats["max"], stats["mean"], stats["std"]), (1, 3, 2, 1))
+        stats = self.tensor(result, "y")["stats"]
+        self.assertEqual((stats["min"], stats["max"], stats["mean"], stats["std"]), (0, 1, .5, .5))
+        json.dumps(result, allow_nan=False)
+
+    def test_stats_empty_singleton_and_no_finite_values(self):
+        result = self.run_code("empty = torch.empty(2, 0, 3)\nsingle = torch.tensor(42.)\ninvalid = torch.tensor([float('nan'), float('inf')])")
+        for name, count in (("empty", 0), ("invalid", 2)):
+            stats = self.tensor(result, name)["stats"]
+            self.assertTrue(stats["supported"])
+            self.assertEqual(stats["finite_count"], 0)
+            self.assertEqual(stats["nonfinite_count"], count)
+            for aggregate in ("min", "max", "mean", "std"):
+                self.assertIsNone(stats[aggregate])
+        stats = self.tensor(result, "single")["stats"]
+        self.assertEqual(stats["count"], 1)
+        self.assertEqual(stats["mean"], 42)
+        self.assertEqual(stats["std"], 0)
+        json.dumps(result, allow_nan=False)
+
+    def test_stats_remain_finite_at_float64_extremes(self):
+        result = self.run_code("x = torch.tensor([-1.7e308, 1.7e308], dtype=torch.float64)\ny = torch.tensor([1.7e308, 1.7e308], dtype=torch.float64)")
+        stats = self.tensor(result, "x")["stats"]
+        self.assertEqual(stats["mean"], 0)
+        self.assertEqual(stats["std"], 1.7e308)
+        stats = self.tensor(result, "y")["stats"]
+        self.assertEqual(stats["mean"], 1.7e308)
+        self.assertEqual(stats["std"], 0)
+        json.dumps(result, allow_nan=False)
+
+    def test_stats_preserve_history_and_explain_unsupported_types(self):
+        result = self.run_code("x = torch.arange(3.)\nx.add_(10)\nz = torch.tensor([1+2j])\nm = torch.empty(2, device='meta')")
+        self.assertEqual(self.tensor(result, "x", 0)["stats"]["mean"], 1)
+        self.assertEqual(self.tensor(result, "x")["stats"]["mean"], 11)
+        for name in ("z", "m"):
+            stats = self.tensor(result, name)["stats"]
+            self.assertFalse(stats["supported"])
+            self.assertTrue(stats["reason"])
+            self.assertIsNone(stats["mean"])
+
+    def test_quantized_tensor_stats_use_dequantized_values(self):
+        result = self.run_code("x = torch.quantize_per_tensor(torch.tensor([1., 2., 3.]), .5, 0, torch.qint8)")
+        x = self.tensor(result, "x")
+        self.assertEqual(x["slice"]["values"], [[1, 2, 3]])
+        self.assertEqual(x["stats"]["mean"], 2)
+        self.assertAlmostEqual(x["stats"]["std"], math.sqrt(2 / 3))
+        self.assertEqual(x["nbytes"], 3)
 
 
 class RunnerTests(unittest.TestCase):
+    def test_crashed_worker_resets_and_next_execution_recovers(self):
+        runner = Runner(timeout=2)
+        try:
+            runner.request({"action": "execute", "code": "x = torch.arange(4)"})
+            with self.assertRaises((EOFError, OSError)):
+                runner.request({"action": "execute", "code": "import os\nos._exit(1)"})
+            self.assertFalse(runner.ready)
+            result = runner.request({"action": "execute", "code": "x = torch.tensor(9)"})
+            self.assertIsNone(result["error"])
+            self.assertEqual(result["steps"][0]["tensors"][0]["slice"]["values"], [[9]])
+        finally:
+            runner.stop()
+
     def test_timeout_resets_worker_and_next_execution_recovers(self):
         runner = Runner(timeout=0.2)
         try:

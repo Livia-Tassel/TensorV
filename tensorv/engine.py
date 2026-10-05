@@ -19,11 +19,39 @@ PAGE_SIZE = 24
 
 
 def json_number(value):
+    # JSON numbers are parsed as float64 by browsers. Keep wide integers exact
+    # for inspection and CSV/JSON export without changing boolean values.
+    if type(value) is int and abs(value) > 2 ** 53 - 1:
+        return str(value)
     if isinstance(value, complex):
         return str(value)
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     return value
+
+
+def tensor_stats(data, count, reason=None):
+    """Describe the complete snapshot, excluding NaN/Inf from real aggregates."""
+    result = {"supported": False, "count": count, "finite_count": None,
+              "nonfinite_count": None, "min": None, "max": None,
+              "mean": None, "std": None}
+    if data is None or data.is_complex():
+        result["reason"] = reason or "复数暂不提供实数统计。"
+        return result
+    values = (data.dequantize() if data.is_quantized else data).to(torch.float64)
+    finite = values[torch.isfinite(values)]
+    result.update(supported=True, finite_count=finite.numel(),
+                  nonfinite_count=count - finite.numel())
+    if finite.numel():
+        minimum, maximum = finite.min().item(), finite.max().item()
+        # Scaling prevents finite float64 inputs from overflowing during the
+        # mean/variance reductions; population std is defined for singletons.
+        scale = max(abs(minimum), abs(maximum))
+        normalized = finite / scale if scale else finite
+        mean = max(-1.0, min(1.0, normalized.mean().item())) * scale
+        std = min(1.0, normalized.std(unbiased=False).item()) * scale
+        result.update(min=minimum, max=maximum, mean=mean, std=std)
+    return result
 
 
 class OutputBuffer(io.StringIO):
@@ -97,12 +125,14 @@ class Engine:
                     "id": snapshot_id, "name": name, "shape": list(tensor.shape),
                     "dtype": str(tensor.dtype).removeprefix("torch."),
                     "device": str(tensor.device), "numel": tensor.numel(),
+                    "element_size": tensor.element_size(),
+                    "nbytes": tensor.numel() * tensor.element_size(),
                     "stride": [], "offset": 0, "contiguous": False,
                     "storage": None, "available": False,
                 }
                 data = None
                 if tensor.layout != torch.strided or tensor.device.type == "meta":
-                    metadata["warning"] = "初版仅展示普通稠密 Tensor 的数值。"
+                    metadata["warning"] = "仅支持普通稠密 Tensor 的数值展示。"
                 else:
                     metadata.update(stride=list(tensor.stride()), offset=tensor.storage_offset(),
                                     contiguous=tensor.is_contiguous())
@@ -111,7 +141,7 @@ class Engine:
                     if key not in storages:
                         storages[key] = (f"S{len(storages) + 1}", storage)
                     metadata["storage"] = storages[key][0]
-                    size = tensor.numel() * tensor.element_size()
+                    size = metadata["nbytes"]
                     if tensor.numel() > MAX_ELEMENTS:
                         metadata["warning"] = "超过 100,000 个元素，仅显示形状信息。请先取较小切片。"
                     elif saved_bytes + size > MAX_BYTES:
@@ -121,12 +151,10 @@ class Engine:
                         saved_bytes += size
                     if data is not None:
                         metadata["available"] = True
-                        if data.numel() and not data.is_complex():
-                            values = data.to(torch.float64)
-                            finite = values[torch.isfinite(values)]
-                            if finite.numel():
-                                metadata["min"] = finite.min().item()
-                                metadata["max"] = finite.max().item()
+                metadata["stats"] = tensor_stats(data, metadata["numel"], metadata.get("warning"))
+                if metadata["stats"]["min"] is not None:
+                    metadata["min"] = metadata["stats"]["min"]
+                    metadata["max"] = metadata["stats"]["max"]
                 self.records[snapshot_id] = (metadata, data)
                 if data is not None:
                     metadata["slice"] = self.slice({"id": snapshot_id})
