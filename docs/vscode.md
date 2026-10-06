@@ -6,7 +6,7 @@ TensorV 在 VS Code 中运行 Python 文件或选区，将执行结果显示为�
 
 需要 VS Code 1.90+，以及安装了 `torch`、`numpy` 的 Python 3.10+ 环境。VSIX 包含界面和 TensorV 的 Python 源码，不包含 Python 或 PyTorch。日常使用无需 Node.js。
 
-当前插件尚未发布到 Marketplace。获取本地构建的 `tensorv-0.3.0.vsix`，或从对应成功的 GitHub Actions 运行页面下载 VSIX 产物并解压，然后：
+当前插件尚未发布到 Marketplace。获取本地构建的 `tensorv-0.4.0.vsix`，或从对应成功的 GitHub Actions 运行页面下载 VSIX 产物并解压，然后：
 
 1. 在 VS Code 的“扩展”视图点击 `…`。
 2. 选择“从 VSIX 安装”，打开 `.vsix` 文件。
@@ -15,7 +15,7 @@ TensorV 在 VS Code 中运行 Python 文件或选区，将执行结果显示为�
 也可以通过终端安装：
 
 ```sh
-code --install-extension path/to/tensorv-0.3.0.vsix
+code --install-extension path/to/tensorv-0.4.0.vsix
 ```
 
 从源码构建时，先在仓库根目录安装前端依赖，再运行：
@@ -26,7 +26,7 @@ npm ci --prefix extensions/vscode
 npm run package:vscode
 ```
 
-产物为 `extensions/vscode/tensorv-0.3.0.vsix`。构建命令不会发布到 Marketplace，也不会更新线上演示实例。
+产物为 `extensions/vscode/tensorv-0.4.0.vsix`。构建命令不会发布到 Marketplace，也不会更新线上演示实例。
 
 ## 选择 Python
 
@@ -60,6 +60,7 @@ SSH、WSL 和 Dev Containers 中，插件在相应的远程扩展宿主执行，
 | TensorV: 运行当前 Python 文件 | 执行编辑器当前全文，包括尚未保存的修改 |
 | TensorV: 运行所选 Python 代码 | 仅执行选中的原始文本 |
 | TensorV: 打开张量检查器 | 打开面板，不自动执行代码 |
+| TensorV: 打开实验文件 | 选择 `.tensorv.json`，创建待运行的实验副本 |
 | TensorV: 选择 Python 解释器 | 更换执行环境，下次运行生效 |
 | TensorV: 重启执行环境 | 关闭现有执行进程，清除快照 |
 
@@ -70,6 +71,14 @@ SSH、WSL 和 Dev Containers 中，插件在相应的远程扩展宿主执行，
 源文件不会被面板编辑覆盖。面板副本不是项目文件，需保留时使用下载按钮，在 VS Code 保存对话框中选择位置；关闭面板或重载窗口前应保存重要修改。CSV / JSON 导出也通过同一保存对话框完成。
 
 “返回源码”定位当前语句，选区会加上原始起始行偏移。该入口只适用于最后导入且尚未在面板中修改的副本；源文件版本变化后，需要重新运行文件或选区，再进行定位。
+
+## 实验导入与分享
+
+使用 **TensorV: 打开实验文件**，或检查器侧栏中的“打开实验”，选择 UTF-8 编码的 `.tensorv.json`。打开实验只显示新的脚本副本，不自动执行；检查代码后点击“运行”，再根据当前执行结果恢复保存的观察位置。
+
+实验文件没有源文件映射，因此导入实验后不提供原 Python 文件的“返回源码”定位。环境版本记录不会替你选择解释器或安装依赖。
+
+在“分享实验”中可复制分享链接，或通过原生保存对话框导出 `.tensorv.json`。复制链接由 VS Code 写入系统剪贴板，链接指向公共 TensorV 网页；接收方点击运行后使用公共环境，不继承你的本机环境。需要在其他本机环境继续分析时，可传递实验文件。文件最多 128 KiB，只包含单个脚本和观察设置，不包含实际张量快照；完整语义见[保存与分享实验](experiments.md)。
 
 ## 检查结果
 
@@ -96,4 +105,4 @@ Python 在扩展宿主所在机器上执行，拥有当前用户的文件、网�
 | 返回源码提示文件已修改 | 重新运行当前文件或选区，更新行号与文件版本记录 |
 | 面板打开但无法执行 | 确认工作区已受信任，并检查解释器及其依赖 |
 
-返回 [README](../README.md) · [用户指南](user-guide.md) · [开发指南](../CONTRIBUTING.md)
+返回 [README](../README.md) · [用户指南](user-guide.md) · [保存与分享实验](experiments.md) · [开发指南](../CONTRIBUTING.md)

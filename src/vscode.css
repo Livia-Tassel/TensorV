@@ -23,6 +23,7 @@ body.vscode-workspace {
   background: var(--page);
 }
 .vscode-workspace #theme { display: none; }
+.vscode-workspace #vscode-download { display: none; }
 .vscode-workspace .topbar { height: 43px; }
 .vscode-workspace .document-state { display: none; }
 @media (max-width: 560px) {

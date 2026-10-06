@@ -51,7 +51,7 @@ Nginx 路径采用 Debian / Ubuntu 的站点布局。其他发行版可将站点
 ```sh
 npm ci
 npm run build
-docker build -f deploy/Dockerfile.sandbox -t tensorv-sandbox:0.2.0 .
+docker build -f deploy/Dockerfile.sandbox -t tensorv-sandbox:0.4.0 .
 ```
 
 示例构建标签与 `deploy/public.env.example` 中的 `TENSORV_IMAGE` 一致。后续发布建议使用提交号作为镜像标签，并同步修改环境配置，以便更新和回退。Docker 镜像内安装 PyTorch；网关所在的宿主 Python 环境无需执行 `pip install -r requirements.txt`。
@@ -84,7 +84,7 @@ sudo install -m 0644 deploy/tensorv-cleanup.timer /etc/systemd/system/tensorv-cl
 
 ```ini
 TENSORV_ORIGIN=https://tensorv.example.com
-TENSORV_IMAGE=tensorv-sandbox:0.2.0
+TENSORV_IMAGE=tensorv-sandbox:0.4.0
 ```
 
 公网来源必须为完整协议、主机及可选端口，不能包含路径或末尾斜线；镜像名称必须与构建产物一致。环境文件由 systemd 管理器读取，可保持 `root:root`、`0640` 权限，不需要向运行账户开放写入或为其复制一份配置。
@@ -95,7 +95,7 @@ TENSORV_IMAGE=tensorv-sandbox:0.2.0
 
 ```sh
 cd /opt/tensorv/current
-sudo -u tensorv python3 -c "from tensorv.sandbox import check_sandbox; print(check_sandbox(image='tensorv-sandbox:0.2.0'))"
+sudo -u tensorv python3 -c "from tensorv.sandbox import check_sandbox; print(check_sandbox(image='tensorv-sandbox:0.4.0'))"
 ```
 
 使用其他版本标签时，同时修改上述检查命令中的镜像名称。检查会实际创建 `runsc` 容器、导入 PyTorch 并确认非 root 用户；不是只检查可执行文件是否存在。
@@ -195,7 +195,7 @@ curl -fsS https://tensorv.example.com/api/health
 python3 -m tensorv.public_server \
   --origin https://tensorv.example.com \
   --host 127.0.0.1 --port 8765 \
-  --image tensorv-sandbox:0.2.0 --runtime runsc \
+  --image tensorv-sandbox:0.4.0 --runtime runsc \
   --trust-proxy-loopback \
   --max-sessions 8 --max-sessions-per-ip 2 --session-ttl 900 \
   --concurrency 1 --max-connections 24 --timeout 20

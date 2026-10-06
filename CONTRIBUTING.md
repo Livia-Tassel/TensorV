@@ -34,6 +34,7 @@ Vite 默认地址为 `http://127.0.0.1:5173`，`/api` 请求代理到 `http://12
 | `src/inspect.js` | 数值格式、切片分布和导出 |
 | `src/examples.js` | 示例与算子说明 |
 | `src/host.js` | VS Code Webview 请求、导入和面板状态 |
+| `src/experiments.js` | 实验文件校验、版本化 JSON、分享链接编码与解码 |
 | `src/diagnostics.js`、`src/diagnostics.css` | 形状诊断渲染和样式 |
 | `tensorv/engine.py` | 代码插桩、张量快照、统计和切片 |
 | `tensorv/diagnostics.py` | 基于实际输入形状的保守错误诊断 |
@@ -78,7 +79,7 @@ npm install --prefix extensions/vscode
 npm run package:vscode
 ```
 
-`build:vscode` 构建前端并将允许打包的 Python 源码复制到插件的 `runtime/`；`package:vscode` 生成 `extensions/vscode/tensorv-0.3.0.vsix`。VSIX 不包含 `.venv`、开发依赖、凭据或公共服务部署配置。构建及 CI 产物不等于 Marketplace 发布，也不会更新线上服务。
+`build:vscode` 构建前端并将允许打包的 Python 源码复制到插件的 `runtime/`；`package:vscode` 生成 `extensions/vscode/tensorv-0.4.0.vsix`。VSIX 不包含 `.venv`、开发依赖、凭据或公共服务部署配置。构建及 CI 产物不等于 Marketplace 发布，也不会更新线上服务。
 
 已有本地 VS Code 的 Windows 环境可验证真实扩展宿主：
 
@@ -93,6 +94,16 @@ npm run package:vscode
 
 修改通信层时，应同时运行 Python bridge、JavaScript host 和插件单元测试；HTTP 浏览器测试通过不能证明 VS Code 的资源加载、CSP 或进程回收有效。修改诊断规则时，应保留原始异常，并验证复杂或不明确的表达式不会得到猜测性的诊断。
 
+## 实验分享验证
+
+`src/experiments.js` 的文件格式版本独立于应用版本。格式修改需考虑既有文件兼容性；不要让校验、解码或预览触发代码执行、依赖安装或网络请求。文件大小按 UTF-8 字节计算，压缩内容和解压后的内容均受限。
+
+浏览器回归位于 `tests/sharing/ui.spec.js`，由 `npm run test:ui` 一并运行。涉及实验导入或执行生命周期时，应覆盖已保存自动运行设置、未触发的编辑定时器、正在执行的旧请求、脚本切换和页面重载，确保待确认副本只能在明确运行操作后执行。畸形链接不能回退到自动执行其他脚本。
+
+状态恢复需基于新生成的快照；测试应包含前后两侧指向同一张量但采用不同维度、索引和分页的情况，避免缓存互相覆盖。步骤、变量或 shape 改变时应安全回退，不能使用旧服务端 ID。导出内容不得包含张量数值、其他脚本或源文件 URI。
+
+VS Code 导入还应验证原生文件入口的大小限制、预览不执行、旧源码映射清除和剪贴板桥接；网页测试不能代替真实扩展宿主验证。用户侧格式与执行边界见[实验说明](docs/experiments.md)。
+
 本地单元测试不能证明实际容器隔离有效。公共部署还需要 Linux、Docker 和 gVisor，并用配置中的实际镜像运行 `check_sandbox`，验证网络、文件系统、资源限制、会话隔离及故障清理。不要为了让本地测试通过而允许公共入口回退到本地 Runner。
 
 ## 实际沙箱集成验证
@@ -100,8 +111,8 @@ npm run package:vscode
 在已安装 Docker 和 gVisor 的 Linux 验证主机上构建执行镜像，然后从源码根目录运行：
 
 ```sh
-docker build -f deploy/Dockerfile.sandbox -t tensorv-sandbox:0.2.0 .
-TENSORV_SANDBOX_IMAGE=tensorv-sandbox:0.2.0 \
+docker build -f deploy/Dockerfile.sandbox -t tensorv-sandbox:0.4.0 .
+TENSORV_SANDBOX_IMAGE=tensorv-sandbox:0.4.0 \
   python3 -m unittest discover -s tests -p test_sandbox_live.py -v
 ```
 

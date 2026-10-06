@@ -26,12 +26,17 @@ async function run() {
   const originalSpawn = childProcess.spawn;
   const originalInformation = vscode.window.showInformationMessage;
   const originalError = vscode.window.showErrorMessage;
+  const originalOpenDialog = vscode.window.showOpenDialog;
   const notifications = [];
   const children = [];
   const incoming = [];
   const outgoing = [];
   let panel;
   let failure;
+  let dialogSelection;
+  let clipboardBefore;
+
+  vscode.window.showOpenDialog = async () => dialogSelection;
 
   // Notification actions are not part of the execution contract and would
   // otherwise wait for a person to dismiss a toast in this hidden test host.
@@ -53,6 +58,48 @@ async function run() {
         outgoing.push(message);
         return originalPostMessage(message);
       };
+      // Test-only probe: preserve the production HTML/CSP/assets, seed a real
+      // persisted auto-run preference, and observe the rendered editor after
+      // imports. The public extension never exposes the acquired VS Code API.
+      let owner = created.webview;
+      let descriptor;
+      while (owner && !descriptor) {
+        descriptor = Object.getOwnPropertyDescriptor(owner, 'html');
+        owner = Object.getPrototypeOf(owner);
+      }
+      assert.ok(descriptor?.get && descriptor?.set, 'Webview HTML accessor is available to the test harness');
+      Object.defineProperty(created.webview, 'html', {
+        configurable: true,
+        get() { return descriptor.get.call(created.webview); },
+        set(html) {
+          const nonce = html.match(/<script nonce="([^"]+)"/);
+          if (nonce && html.includes('id="app"')) {
+            const probe = `(() => {
+              const api = acquireVsCodeApi();
+              window.acquireVsCodeApi = () => api;
+              const state = api.getState() || {};
+              api.setState({ ...state, storage: { ...state.storage, 'tensorv:auto': 'true' } });
+              window.addEventListener('message', ({ data }) => {
+                if (data?.type === 'tensorv:test:enableAuto') {
+                  const toggle = document.querySelector('#auto');
+                  if (toggle?.getAttribute('aria-checked') === 'false') toggle.click();
+                  api.postMessage({ type: 'tensorv:test:autoEnabled', automatic: toggle?.getAttribute('aria-checked') });
+                  return;
+                }
+                if (data?.type !== 'tensorv:experiment') return;
+                setTimeout(() => api.postMessage({
+                  type: 'tensorv:test:experiment',
+                  code: document.querySelector('.cm-content')?.textContent,
+                  automatic: document.querySelector('#auto')?.getAttribute('aria-checked'),
+                  sourceVisible: !!document.querySelector('#reveal-source:not([hidden])'),
+                }), 900);
+              });
+            })();`;
+            html = html.replace('<head>', `<head><script nonce="${nonce[1]}">${probe}</script>`);
+          }
+          descriptor.set.call(created.webview, html);
+        },
+      });
     }
     return created;
   };
@@ -79,17 +126,42 @@ async function run() {
     await vscode.workspace.getConfiguration('tensorv', folder.uri).update('pythonPath', pythonPath, vscode.ConfigurationTarget.Workspace);
     await extension.activate();
     const commands = await vscode.commands.getCommands(true);
-    for (const name of ['open', 'runFile', 'runSelection', 'selectInterpreter', 'restart']) {
+    for (const name of ['open', 'openExperiment', 'runFile', 'runSelection', 'selectInterpreter', 'restart']) {
       assert.ok(commands.includes(`tensorv.${name}`), `tensorv.${name} is registered`);
     }
     checks.push('activation and command registration');
 
-    await vscode.commands.executeCommand('tensorv.open');
+    const experiment = {
+      format: 'tensorv-experiment', version: 1, title: 'Host 实验导入',
+      code: 'raise RuntimeError("An imported experiment must never execute automatically")\n',
+      environment: { torch: null, app: '0.4.0' },
+      view: { step: null, referenceStep: null, before: null, after: null, compare: true, heatmap: true, precision: 4, tab: 'canvas' },
+    };
+    const experimentText = JSON.stringify(experiment);
+    const experimentUri = vscode.Uri.joinPath(folder.uri, 'host.tensorv.json');
+    await vscode.workspace.fs.writeFile(experimentUri, Buffer.from(experimentText));
+    dialogSelection = [experimentUri];
+    await vscode.commands.executeCommand('tensorv.openExperiment');
     await until(() => panel && incoming.some((message) => message.type === 'tensorv:ready'), 'production webview loads and sends ready');
-    await delay(150);
+    await until(() => outgoing.some((message) => message.type === 'tensorv:experiment' && message.text === experimentText), 'experiment queued before ready reaches webview');
+    const initialView = await until(() => incoming.find((message) => message.type === 'tensorv:test:experiment'), 'production editor renders the imported experiment');
+    assert.match(initialView.code, /must never execute automatically/);
+    assert.equal(initialView.automatic, 'false', 'Imported experiments turn off a previously persisted auto-run preference');
     assert.equal(incoming.filter((message) => message.type === 'tensorv:request' && message.action === 'execute').length, 0,
       'Opening the panel must not execute a persisted draft');
     checks.push('production webview assets and no execution on open');
+    assert.equal(children.length, 0, 'Importing an experiment must not start Python');
+    checks.push('native UTF-8 experiment import waits for ready and never executes');
+
+    const oversizedUri = vscode.Uri.joinPath(folder.uri, 'oversized.tensorv.json');
+    await vscode.workspace.fs.writeFile(oversizedUri, Buffer.alloc(128 * 1024 + 1, 32));
+    dialogSelection = [oversizedUri];
+    const importCount = outgoing.filter((message) => message.type === 'tensorv:experiment').length;
+    await vscode.commands.executeCommand('tensorv.openExperiment');
+    assert.equal(outgoing.filter((message) => message.type === 'tensorv:experiment').length, importCount);
+    assert.ok(notifications.some((item) => item.type === 'error' && /128 KiB/.test(item.message)));
+    dialogSelection = [experimentUri];
+    checks.push('native import rejects experiment files over 128 KiB');
 
     if (untrusted) {
       const document = await vscode.workspace.openTextDocument({ language: 'python', content: 'import torch\nx = torch.arange(6)\n' });
@@ -141,6 +213,29 @@ async function run() {
     assert.equal(imported.source.lineOffset, 2);
     checks.push('selection executes independently and preserves its source-line offset');
 
+    const slowCode = 'import time\nimport torch\ntime.sleep(1.5)\nx = torch.arange(3)\n';
+    const slowDocument = await vscode.workspace.openTextDocument({ language: 'python', content: slowCode });
+    await vscode.window.showTextDocument(slowDocument, vscode.ViewColumn.One);
+    const slowIncomingStart = incoming.length;
+    const slowOutgoingStart = outgoing.length;
+    await vscode.commands.executeCommand('tensorv.runFile');
+    const slowRequest = await until(() => incoming.slice(slowIncomingStart).find((message) =>
+      message.type === 'tensorv:request' && message.action === 'execute' && message.payload?.code === slowCode), 'slow Python request enters execution');
+    await panel.webview.postMessage({ type: 'tensorv:test:enableAuto' });
+    const autoState = await until(() => incoming.slice(slowIncomingStart).find((message) => message.type === 'tensorv:test:autoEnabled'), 'automatic execution is enabled while Python is running');
+    assert.equal(autoState.automatic, 'true');
+    const beforeImportExecutions = incoming.filter((message) => message.type === 'tensorv:request' && message.action === 'execute').length;
+    const probeStart = incoming.length;
+    await vscode.commands.executeCommand('tensorv.openExperiment');
+    await until(() => responseFor(slowRequest.id, slowOutgoingStart), 'in-flight Python request settles after import');
+    const importedView = await until(() => incoming.slice(probeStart).find((message) => message.type === 'tensorv:test:experiment'), 'experiment replaces the editor while execution is in flight');
+    await delay(800);
+    assert.match(importedView.code, /must never execute automatically/);
+    assert.equal(importedView.automatic, 'false');
+    assert.equal(importedView.sourceVisible, false);
+    assert.equal(incoming.filter((message) => message.type === 'tensorv:request' && message.action === 'execute').length, beforeImportExecutions);
+    checks.push('experiment imported during execution stays inert with persisted automatic-run enabled');
+
     const firstChild = children.at(-1);
     await vscode.commands.executeCommand('tensorv.restart');
     await until(() => firstChild.exitCode !== null || firstChild.signalCode !== null, 'restart terminates the previous bridge', 10000);
@@ -151,6 +246,16 @@ async function run() {
     assert.ok(children.length >= 2);
     tensor = execution.steps.at(-1).tensors.find((item) => item.name === 'y');
     checks.push('execution environment restarts and runs again');
+
+    // A second import after actual execution must also remain inert, including
+    // any persisted automatic-run preference restored by the frontend.
+    const executionCount = incoming.filter((message) => message.type === 'tensorv:request' && message.action === 'execute').length;
+    const finalProbeStart = incoming.length;
+    await vscode.commands.executeCommand('tensorv.openExperiment');
+    const finalView = await until(() => incoming.slice(finalProbeStart).find((message) => message.type === 'tensorv:test:experiment'), 'rendered experiment clears the previous source button');
+    assert.equal(finalView.sourceVisible, false);
+    assert.equal(incoming.filter((message) => message.type === 'tensorv:request' && message.action === 'execute').length, executionCount);
+    checks.push('experiment import after a Python run does not trigger another execution');
 
     // The actual production webview was exercised above. This final, isolated
     // driver sends one slice request through VS Code's real Webview transport.
@@ -166,10 +271,31 @@ async function run() {
     assert.deepEqual(slice.data.values[0], [12, 16, 20]);
     checks.push('real snapshot slice resolves after restart');
 
+    // Use a single real Webview API object to exercise clipboard acknowledgement
+    // and prove the previous Python source mapping was cleared by the import.
+    editor = await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
+    editor.selection = new vscode.Selection(0, 0, 0, 0);
+    clipboardBefore = await vscode.env.clipboard.readText();
+    const copiedText = 'https://tensorv.example/#experiment=host-test';
+    const copyRequest = { type: 'tensorv:copy', id: 900003, text: copiedText };
+    panel.webview.html = '<!doctype html><html><body><script>' +
+      'const api = acquireVsCodeApi(); api.postMessage(' + JSON.stringify(copyRequest) + ');' +
+      'api.postMessage({type:"tensorv:revealLine",line:2});' +
+      '</script></body></html>';
+    const copyResponse = await until(() => responseFor(copyRequest.id), 'native clipboard acknowledges copy');
+    assert.equal(copyResponse.ok, true, copyResponse.message);
+    assert.equal(copyResponse.data, null);
+    assert.equal(await vscode.env.clipboard.readText(), copiedText);
+    await vscode.env.clipboard.writeText(clipboardBefore);
+    clipboardBefore = undefined;
+    await delay(100);
+    assert.equal(editor.selection.active.line, 0, 'Imported experiments cannot reveal a stale Python source mapping');
+    checks.push('native clipboard copy round-trips and experiment import clears source mapping');
+
     panel.dispose();
     panel = null;
     await until(() => children.every((child) => child.exitCode !== null || child.signalCode !== null), 'closing the panel releases bridge processes', 10000);
-    assert.deepEqual(notifications.filter((item) => item.type === 'error'), []);
+    assert.deepEqual(notifications.filter((item) => item.type === 'error' && !/128 KiB/.test(item.message)), []);
     checks.push('panel closure releases owned Python bridge processes');
   } catch (error) {
     failure = error;
@@ -182,6 +308,8 @@ async function run() {
     childProcess.spawn = originalSpawn;
     vscode.window.showInformationMessage = originalInformation;
     vscode.window.showErrorMessage = originalError;
+    vscode.window.showOpenDialog = originalOpenDialog;
+    if (clipboardBefore !== undefined) await vscode.env.clipboard.writeText(clipboardBefore);
     const report = {
       ok: !failure,
       vscode: vscode.version,

@@ -1,0 +1,17 @@
+.share-button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 5px; padding: 6px 9px; color: var(--secondary); background: transparent; font-size: 12px; white-space: nowrap; }
+.share-button:hover { background: var(--hover); }
+.share-button .icon { width: 15px; height: 15px; }
+.share-dialog { width: min(560px, calc(100vw - 28px)); }
+.share-dialog p { color: var(--secondary); line-height: 1.7; font-size: 12px; }
+.share-dialog #share-summary { color: var(--text); overflow-wrap: anywhere; }
+.share-link-row { display: flex; gap: 8px; margin-top: 7px; }
+#share-link { min-width: 0; flex: 1; padding: 8px; font-family: var(--mono); font-size: 12px; }
+#share-link-status { min-height: 20px; margin: 7px 0 16px; }
+.share-privacy { padding-top: 12px; border-top: 1px solid var(--border); }
+.experiment-notice { flex-shrink: 0; padding: 9px 16px; font-size: 12px; line-height: 1.6; border-bottom: 1px solid var(--border); background: var(--accent-soft); color: var(--text); }
+@media (max-width: 600px) {
+  .heading-actions { gap: 8px; }
+  .share-button { padding: 7px; }
+  .share-button span { display: none; }
+  .share-link-row { flex-wrap: wrap; }
+}

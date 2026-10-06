@@ -4,7 +4,20 @@ export function createVSCodeHost(vscode, target) {
   const pending = new Map();
   let sequence = 0;
   let importHandler;
-  let queuedImport;
+  let experimentHandler;
+  let queuedContent;
+  function request(type, payload, timeoutMessage, timeout = 45000) {
+    return new Promise((resolve, reject) => {
+      const id = ++sequence;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(timeoutMessage));
+      }, timeout);
+      pending.set(id, { resolve, reject, timer });
+      try { vscode.postMessage({ type, id, ...payload }); }
+      catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
+    });
+  }
   target.addEventListener('message', (event) => {
     const message = event.data;
     if (!message || typeof message !== 'object') return;
@@ -16,8 +29,13 @@ export function createVSCodeHost(vscode, target) {
       if (message.ok) request.resolve(message.data);
       else request.reject(new Error(message.message || '本地 Python 执行失败。'));
     } else if (message.type === 'tensorv:import' && typeof message.code === 'string' && message.code.length <= 20000) {
+      queuedContent = null;
       if (importHandler) importHandler(message);
-      else queuedImport = message;
+      else queuedContent = message;
+    } else if (message.type === 'tensorv:experiment' && typeof message.text === 'string' && new TextEncoder().encode(message.text).byteLength <= 128 * 1024) {
+      queuedContent = null;
+      if (experimentHandler) experimentHandler(message);
+      else queuedContent = message;
     }
   });
   return {
@@ -28,21 +46,21 @@ export function createVSCodeHost(vscode, target) {
       state = next;
     },
     request(action, payload) {
-      return new Promise((resolve, reject) => {
-        const id = ++sequence;
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error('本地执行未响应，请使用“TensorV: 重启执行环境”后重试。'));
-        }, 45000);
-        pending.set(id, { resolve, reject, timer });
-        try { vscode.postMessage({ type: 'tensorv:request', id, action, payload }); }
-        catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
-      });
+      return request('tensorv:request', { action, payload }, '本地执行未响应，请使用“TensorV: 重启执行环境”后重试。');
+    },
+    copy(text) {
+      if (typeof text !== 'string') return Promise.reject(new Error('复制内容必须是文本。'));
+      return request('tensorv:copy', { text }, '剪贴板未响应，请重试复制。', 10000);
     },
     onImport(handler) {
       importHandler = handler;
-      if (queuedImport) { const message = queuedImport; queuedImport = null; handler(message); }
+      if (queuedContent?.type === 'tensorv:import') { const message = queuedContent; queuedContent = null; handler(message); }
     },
+    onExperiment(handler) {
+      experimentHandler = handler;
+      if (queuedContent?.type === 'tensorv:experiment') { const message = queuedContent; queuedContent = null; handler(message); }
+    },
+    openExperiment() { vscode.postMessage({ type: 'tensorv:openExperiment' }); },
     ready() { vscode.postMessage({ type: 'tensorv:ready' }); },
     revealLine(line) { vscode.postMessage({ type: 'tensorv:revealLine', line }); },
     save(filename, content) { vscode.postMessage({ type: 'tensorv:save', filename, content }); },

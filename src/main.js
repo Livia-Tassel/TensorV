@@ -13,6 +13,8 @@ import { createScriptStore } from './scripts';
 import { host } from './host';
 import { renderDiagnostic } from './diagnostics';
 import './vscode.css';
+import { setupSharing } from './sharing';
+import { validateExperiment, serializeExperiment, parseExperiment } from './experiments';
 
 const icons = {
   sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
@@ -67,6 +69,7 @@ let beforeName = null;
 let referenceStep = null;
 let sourceRecord = null;
 const sourceImports = new Map();
+const experimentCache = new Map();
 let compare = readLocal('tensorv:compare', 'true') === 'true';
 let precision = Number(readLocal('tensorv:precision', '4')) || 4;
 let heatmap = readLocal('tensorv:heatmap', 'true') === 'true';
@@ -119,7 +122,7 @@ const pythonHighlight = HighlightStyle.define([
 function makeEditorState(code) {
   return EditorState.create({
     doc: code,
-    extensions: [basicSetup, python(), syntaxHighlighting(pythonHighlight), lineField, EditorView.contentAttributes.of({ 'aria-label': 'Python 代码编辑器' }), Prec.highest(keymap.of([{ key: 'Mod-Enter', run: () => { execute(); return true; } }])), keymap.of([indentWithTab]),
+    extensions: [basicSetup, python(), syntaxHighlighting(pythonHighlight), lineField, EditorView.contentAttributes.of({ 'aria-label': 'Python 代码编辑器' }), Prec.highest(keymap.of([{ key: 'Mod-Enter', run: () => { runCurrent(); return true; } }])), keymap.of([indentWithTab]),
       EditorView.theme({ '&': { fontSize: '13px', height: '100%' }, '.cm-scroller': { fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace', lineHeight: '1.8' }, '.cm-content': { padding: '14px 0' }, '.cm-gutters': { background: 'var(--editor-bg)', color: 'var(--muted)', border: 'none', padding: '0 5px 0 8px' }, '.cm-activeLineGutter': { background: 'var(--accent-soft)', color: 'var(--accent)' }, '.cm-activeLine': { background: 'var(--active-line)' }, '.cm-selectionBackground': { background: 'var(--selection) !important' }, '&.cm-focused': { outline: 'none' }, '.cm-line': { padding: '0 16px 0 10px' }, '.cm-cursor': { borderLeftColor: 'var(--text)' } }),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
@@ -167,6 +170,11 @@ async function api(path, payload) {
 }
 async function execute() {
   clearTimeout(timer);
+  if (scripts.current().reviewRequired) {
+    pending = false;
+    markStatus('待运行 · 外部实验', 'pending');
+    return;
+  }
   if (busy) { pending = true; return; }
   stopPlayback();
   busy = true;
@@ -202,6 +210,8 @@ async function execute() {
       referenceStep = null;
       configCache.clear();
       sliceCache.clear();
+      await restoreExperiment(next, thisRevision, code);
+      if (thisRevision !== revision) { pending = pending || automatic; return; }
       stale = false;
       render();
     } else {
@@ -227,6 +237,11 @@ async function execute() {
     updatePlayback();
     if (pending) { pending = false; execute(); }
   }
+}
+function runCurrent() {
+  scripts.approveCurrent();
+  updateSession();
+  return execute();
 }
 function showError(error) {
   const el = $('#error-box');
@@ -288,7 +303,7 @@ function render() {
   if ($('#reveal-source')) $('#reveal-source').onclick = () => host.revealLine(step.line);
   $('#canvases').classList.toggle('single', !compare || !before);
   $('#canvases').innerHTML = `${compare && before ? canvasHTML('before', before, prev.tensors) : ''}${canvasHTML('after', after, step.tensors)}`;
-  viewConfigs = { before: before ? defaultConfig(before) : null, after: defaultConfig(after) };
+  viewConfigs = { before: before ? defaultConfig(before, 'before') : null, after: defaultConfig(after, 'after') };
   if (compare && before) bindCanvas('before', before, before.slice);
   bindCanvas('after', after, after.slice);
   renderMetadata(after, before);
@@ -298,8 +313,116 @@ function render() {
   renderAnalysis();
   updatePlayback();
 }
-function defaultConfig(tensor) {
-  if (configCache.has(tensor.id)) return structuredClone(configCache.get(tensor.id));
+function experimentNotice(message) {
+  $('#experiment-notice').textContent = message;
+  $('#experiment-notice').hidden = !message;
+}
+function pauseForImport() {
+  stopPlayback(); clearTimeout(timer); pending = false;
+  automatic = false;
+  saveLocal('tensorv:auto', 'false');
+  $('#auto').setAttribute('aria-checked', 'false');
+  $('#auto .switch').classList.remove('on');
+}
+function importExperiment(input) {
+  const experiment = validateExperiment(input);
+  pauseForImport();
+  if (!flushDraft()) throw new Error('请先保存当前代码，再打开实验。');
+  editorStates.set(editingScriptId, editor.state);
+  const name = experiment.title.replace(/\.py$/i, '').replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_').trim().slice(0, 77);
+  const script = scripts.create(name && !/^[.\s]+$/.test(name) ? name : 'experiment', experiment.code, { reviewRequired: true });
+  sourceRecord = null;
+  experimentCache.set(script.id, experiment);
+  saveLocal(`tensorv:experiment:${script.id}`, serializeExperiment(experiment));
+  activateScript(script, { run: false });
+}
+function storedExperiment() {
+  if (experimentCache.has(editingScriptId)) return experimentCache.get(editingScriptId);
+  try {
+    const raw = readLocal(`tensorv:experiment:${editingScriptId}`, null);
+    if (!raw) return null;
+    const experiment = parseExperiment(raw);
+    experimentCache.set(editingScriptId, experiment);
+    return experiment;
+  } catch { return null; }
+}
+function captureExperiment() {
+  if (busy) throw new Error('请等待当前运行结束后再分享。');
+  const ready = !stale && Boolean(result?.steps.length);
+  const stepOf = (index) => {
+    const step = result?.steps[index];
+    return step ? { index, line: step.line, source: step.source } : null;
+  };
+  const viewOf = (side) => {
+    const current = ready && displayed[side];
+    if (!current) return null;
+    const { tensor, slice } = current;
+    return { name: tensor.name, shape: tensor.shape, row_axis: slice.row_axis, col_axis: slice.col_axis,
+      indices: slice.indices, row_start: slice.row_start, col_start: slice.col_start };
+  };
+  return validateExperiment({ format: 'tensorv-experiment', version: 1,
+    title: scripts.current().name, code: editor.state.doc.toString(),
+    environment: { app: '0.4.0', torch: result?.torch_version || null },
+    view: { step: ready ? stepOf(selected) : null, referenceStep: ready && referenceStep !== null ? stepOf(referenceStep) : null,
+      before: viewOf('before'), after: viewOf('after'), compare, heatmap, precision, tab: activeTab } });
+}
+async function restoreExperiment(next, thisRevision, code) {
+  const experiment = storedExperiment();
+  if (!experiment) { experimentNotice(''); return; }
+  if (experiment.code !== code) { experimentNotice('代码已修改，显示本次执行结果。'); return; }
+  const notes = [];
+  if (experiment.environment.torch && experiment.environment.torch !== next.torch_version) {
+    notes.push(`PyTorch 版本不同：原实验 ${experiment.environment.torch}，当前 ${next.torch_version}。`);
+  }
+  const view = experiment.view;
+  if (!view.step) { experimentNotice(notes.join(' ')); return; }
+  const matchStep = (saved) => {
+    if (!saved) return -1;
+    const expected = next.steps[saved.index];
+    if (expected?.line === saved.line && expected.source === saved.source) return saved.index;
+    return next.steps.findIndex((step) => step.line === saved.line && step.source === saved.source);
+  };
+  const index = matchStep(view.step);
+  if (index < 0) { experimentNotice(['原实验步骤不存在，显示当前可用结果。', ...notes].join(' ')); return; }
+  let baseline = view.referenceStep ? matchStep(view.referenceStep) : null;
+  if (baseline === -1) { notes.push('原对照步骤不存在，已回到上一步。'); baseline = null; }
+  const step = next.steps[index], previous = next.steps[baseline ?? index - 1];
+  const after = step.tensors.find((tensor) => tensor.name === view.after?.name)
+    || step.tensors.find((tensor) => step.outputs.includes(tensor.name)) || step.tensors.at(-1);
+  const before = previous?.tensors.find((tensor) => tensor.name === view.before?.name)
+    || previous?.tensors.find((tensor) => tensor.name === after?.name) || previous?.tensors.at(-1);
+  const slices = [];
+  for (const [side, tensor] of [['before', before], ['after', after]]) {
+    const saved = view[side];
+    if (!saved || (side === 'before' && !view.compare)) continue;
+    if (!tensor || tensor.name !== saved.name || JSON.stringify(tensor.shape) !== JSON.stringify(saved.shape)) {
+      notes.push(`${side === 'before' ? '对照' : '当前'}变量或形状已变化，使用默认切片。`);
+      continue;
+    }
+    if (!tensor.available) { notes.push(`${tensor.name} 的数值不可用，未还原切片。`); continue; }
+    try {
+      const slice = await api('slice', { id: tensor.id, row_axis: saved.row_axis, col_axis: saved.col_axis,
+        indices: saved.indices, row_start: saved.row_start, col_start: saved.col_start });
+      if (thisRevision !== revision) return;
+      slices.push({ side, tensor, slice });
+    } catch { notes.push(`${tensor.name} 的切片位置未能还原，使用默认切片。`); }
+  }
+  if (thisRevision !== revision) return;
+  selected = index; referenceStep = baseline;
+  currentName = after?.name || null; beforeName = before?.name || null;
+  compare = view.compare; heatmap = view.heatmap; precision = view.precision;
+  $('#compare').classList.toggle('active', compare); $('#compare').setAttribute('aria-pressed', String(compare));
+  $('#heatmap').setAttribute('aria-pressed', String(heatmap)); $('#precision').value = String(precision);
+  for (const { side, tensor, slice } of slices) {
+    sliceCache.set(`${side}:${tensor.id}`, slice);
+    configCache.set(`${side}:${tensor.id}`, { id: tensor.id, row_axis: slice.row_axis, col_axis: slice.col_axis,
+      indices: [...slice.indices], row_start: slice.row_start, col_start: slice.col_start });
+  }
+  setTab(view.tab);
+  experimentNotice(notes.length ? notes.join(' ') : '已还原实验的查看位置。');
+}
+function defaultConfig(tensor, side) {
+  if (configCache.has(`${side}:${tensor.id}`)) return structuredClone(configCache.get(`${side}:${tensor.id}`));
   const rank = tensor.shape.length;
   return { id: tensor.id, row_axis: rank >= 2 ? rank - 2 : null, col_axis: rank ? rank - 1 : null, indices: Array(rank).fill(0), row_start: 0, col_start: 0 };
 }
@@ -348,7 +471,7 @@ function bindCanvas(side, tensor, initialSlice) {
   const row = $(`#row-${side}`), col = $(`#col-${side}`);
   if (row) row.value = config.row_axis;
   if (col) col.value = config.col_axis;
-  if (sliceCache.has(tensor.id)) renderGrid(side, tensor, sliceCache.get(tensor.id));
+  if (sliceCache.has(`${side}:${tensor.id}`)) renderGrid(side, tensor, sliceCache.get(`${side}:${tensor.id}`));
   else if (initialSlice) renderGrid(side, tensor, initialSlice);
 }
 function renderFixed(side, tensor) {
@@ -393,8 +516,8 @@ async function requestSlice(side, tensor) {
 const displayed = { before: null, after: null };
 function renderGrid(side, tensor, slice) {
   displayed[side] = { tensor, slice };
-  sliceCache.set(tensor.id, slice);
-  configCache.set(tensor.id, { id: tensor.id, row_axis: slice.row_axis, col_axis: slice.col_axis, indices: [...slice.indices], row_start: slice.row_start, col_start: slice.col_start });
+  sliceCache.set(`${side}:${tensor.id}`, slice);
+  configCache.set(`${side}:${tensor.id}`, { id: tensor.id, row_axis: slice.row_axis, col_axis: slice.col_axis, indices: [...slice.indices], row_start: slice.row_start, col_start: slice.col_start });
   const grid = $(`#grid-${side}`);
   if (!slice.values.length || !slice.values[0]?.length) {
     grid.innerHTML = '<div class="empty-tensor">空 Tensor · 此切片没有元素</div>';
@@ -519,6 +642,7 @@ function formatBytes(bytes) {
 }
 function updatePlayback() {
   const usable = Boolean(result?.steps.length) && !stale && !busy;
+  $('#share-experiment').disabled = busy || ['before', 'after'].some((side) => $(`#grid-${side}`)?.getAttribute('aria-busy') === 'true');
   $('#reference-step').disabled = !usable;
   $('#prev-step').disabled = !usable || selected === 0;
   $('#next-step').disabled = !usable || selected === result?.steps.length - 1;
@@ -594,8 +718,9 @@ function flushDraft() {
   try { scripts.update(editor.state.doc.toString()); return true; }
   catch (error) { toast(`${error.message} 请先下载或缩短当前代码。`); return false; }
 }
-function activateScript(script) {
+function activateScript(script, { run = true } = {}) {
   stopPlayback(); clearTimeout(timer);
+  pending = false;
   revision++;
   editingScriptId = script.id;
   editor.setState(editorStates.get(script.id) || makeEditorState(script.code));
@@ -610,8 +735,10 @@ function activateScript(script) {
   $('#cursor-position').textContent = `Ln ${cursor.number}, Col ${editor.state.selection.main.head - cursor.from + 1}`;
   $('#timing').textContent = '—'; $('#tensor-count').textContent = '—';
   showError(null); renderScriptList(); updateSession(); render(); closeSidebar();
+  experimentNotice(script.reviewRequired ? '已导入外部实验。请检查代码，再点击运行以还原查看位置。' : '');
   setMobileView('editor');
-  execute();
+  if (run) execute();
+  else markStatus('待运行 · 外部实验', 'pending');
 }
 function openScript(id) {
   if (id === editingScriptId) { closeSidebar(); setMobileView('editor'); return; }
@@ -744,7 +871,9 @@ function updateThemeButton() {
   document.querySelector('meta[name="theme-color"]').content = dark ? '#212121' : '#ffffff';
 }
 const commands = [
-  { title: '运行代码', detail: `${shortcut} Enter`, run: execute },
+  { title: '运行代码', detail: `${shortcut} Enter`, run: runCurrent },
+  { title: '分享实验', detail: '链接 / 实验文件', run: () => sharing.openShare() },
+  { title: '打开实验', detail: '.tensorv.json', run: () => $('#open-experiment').click() },
   { title: '新建脚本', detail: 'Python', run: () => newScript() },
   { title: '重命名当前脚本', detail: '', run: () => renameScript(editingScriptId) },
   { title: '浏览示例', detail: `${examples.length} 个示例`, run: openLibrary },
@@ -771,13 +900,13 @@ function renderCommands() {
 function runCommand(index) { $('#command-dialog').close(); filteredCommands[index]?.run(); }
 function openCommands() { commandIndex = 0; $('#command-search').value = ''; renderCommands(); openDialog('#command-dialog'); $('#command-search').focus(); }
 
-$('#run').onclick = execute;
+$('#run').onclick = runCurrent;
 $('#auto').onclick = () => {
   automatic = !automatic;
   saveLocal('tensorv:auto', String(automatic));
   $('#auto').setAttribute('aria-checked', String(automatic));
   $('#auto .switch').classList.toggle('on', automatic);
-  if (automatic && stale) execute();
+  if (automatic && (stale || scripts.current().reviewRequired)) runCurrent();
   else if (!automatic) clearTimeout(timer);
 };
 $('#compare').onclick = () => {
@@ -866,6 +995,8 @@ $('#confirm-delete').onclick = () => {
   try {
     const active = deletingScriptId === editingScriptId;
     const current = scripts.remove(deletingScriptId);
+    experimentCache.delete(deletingScriptId);
+    saveLocal(`tensorv:experiment:${deletingScriptId}`, '');
     editorStates.delete(deletingScriptId);
     $('#delete-dialog').close();
     if (active) activateScript(current);
@@ -890,7 +1021,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') { pinned = null; clearHover(); stopPlayback(); closeSidebar(); }
   if (document.querySelector('dialog[open]')) return;
   if (event.altKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); selectStep(selected + (event.key === 'ArrowRight' ? 1 : -1)); }
-  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.target.closest('.cm-editor')) { event.preventDefault(); execute(); }
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.target.closest('.cm-editor')) { event.preventDefault(); runCurrent(); }
   if (event.key === '?' && !event.target.closest('input, textarea, [contenteditable]')) openDialog('#help-dialog');
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { stopPlayback(); updatePlayback(); } });
@@ -968,5 +1099,13 @@ if (host) {
     $('#focus-view').setAttribute('aria-pressed', 'true');
     $('#focus-view').setAttribute('aria-label', '退出专注画布');
   });
-  host.ready();
-} else execute();
+}
+const sharing = setupSharing({ host, capture: captureExperiment, importExperiment, pauseForImport,
+  download: downloadFile, openDialog, toast, showError });
+if (scripts.current().reviewRequired) {
+  pauseForImport();
+  experimentNotice('已导入外部实验。请检查代码，再点击运行以还原查看位置。');
+  markStatus('待运行 · 外部实验', 'pending');
+}
+if (host) host.ready();
+else sharing.importHash().then((handled) => { if (!handled) execute(); });

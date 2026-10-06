@@ -4,6 +4,7 @@ export function layout({ icon, shortcut, automatic, compare, heatmap }) {
   <aside class="app-sidebar" id="sidebar" aria-label="工作区导航">
     <div class="sidebar-header"><strong>TensorV</strong>${button('sidebar-close', '收起侧栏', 'sidebar')}</div>
     <div class="sidebar-actions">
+      <button class="sidebar-action" id="open-experiment">${icon('upload')}<span>打开实验</span></button>
       <button class="sidebar-action" id="new-script">${icon('plus')}<span>新建脚本</span></button>
       <button class="sidebar-action" id="rail-search">${icon('search')}<span>搜索命令</span><kbd>${shortcut} K</kbd></button>
     </div>
@@ -11,16 +12,17 @@ export function layout({ icon, shortcut, automatic, compare, heatmap }) {
       <section class="sidebar-section"><div class="sidebar-section-heading"><span>脚本</span>${button('sidebar-import', '导入 Python 文件', 'upload')}</div><div id="script-list"></div></section>
       <section class="sidebar-section"><div class="sidebar-section-heading"><span>示例</span><button class="text-button" id="browse-examples" title="搜索全部示例" aria-label="浏览示例库">${icon('search')}</button></div><div id="sidebar-examples" class="sidebar-examples"></div></section>
     </div>
-    <div class="sidebar-bottom"><button class="sidebar-action" id="theme" aria-label="切换浅色主题">${icon('sun')}<span>浅色主题</span></button><button class="sidebar-action" id="help" aria-label="使用帮助">${icon('info')}<span>使用帮助</span></button><a class="sidebar-action" href="https://docs.pytorch.org/docs/stable/tensors.html" target="_blank" rel="noreferrer">${icon('external')}<span>PyTorch 文档</span></a></div>
+    <div class="sidebar-bottom"><a id="vscode-download" class="sidebar-action" href="https://tensorv.43.135.182.151.nip.io/downloads/tensorv-0.4.0.vsix">${icon('download')}<span>VS Code 插件</span></a><button class="sidebar-action" id="theme" aria-label="切换浅色主题">${icon('sun')}<span>浅色主题</span></button><button class="sidebar-action" id="help" aria-label="使用帮助">${icon('info')}<span>使用帮助</span></button><a class="sidebar-action" href="https://docs.pytorch.org/docs/stable/tensors.html" target="_blank" rel="noreferrer">${icon('external')}<span>PyTorch 文档</span></a></div>
   </aside>
   <button class="sidebar-backdrop" id="sidebar-backdrop" aria-label="关闭侧栏" hidden></button>
   <div class="app-shell">
     <header class="topbar">
       <div class="document-heading">${button('sidebar-toggle', '切换侧栏', 'sidebar')}<button id="rename-current" class="document-title" title="重命名脚本"><span id="document-title">playground.py</span>${icon('chevron')}</button><span id="document-state" class="document-state" role="status">已保存</span></div>
-      <div class="heading-actions"><button class="auto-control" id="auto" role="switch" aria-checked="${automatic}"><span class="switch ${automatic ? 'on' : ''}"></span>自动运行</button><button class="run-button" id="run">${icon('play')}运行<kbd>${shortcut} ↵</kbd></button></div>
+      <div class="heading-actions"><button class="share-button" id="share-experiment" aria-label="分享实验">${icon('external')}<span>分享</span></button><button class="auto-control" id="auto" role="switch" aria-checked="${automatic}"><span class="switch ${automatic ? 'on' : ''}"></span>自动运行</button><button class="run-button" id="run">${icon('play')}运行<kbd>${shortcut} ↵</kbd></button></div>
     </header>
     <div class="mobile-view-switch" aria-label="工作区域"><button id="mobile-editor" aria-pressed="true">编辑器</button><button id="mobile-inspector" aria-pressed="false">检查器</button></div>
     <div id="error-box" role="alert" hidden></div>
+    <div id="experiment-notice" class="experiment-notice" role="status" hidden></div>
     <main class="workspace" data-mobile-view="editor">
       <section class="editor-panel panel" aria-label="Python 编辑器">
         <div class="panel-header"><div class="file-tab">${icon('code')}<span id="file-tab-name">playground.py</span></div><div class="toolbar-group">${button('import', '导入 Python 文件', 'upload')}${button('copy-code', '复制代码', 'copy')}${button('download', '下载 Python 代码', 'download')}${button('reset', '恢复当前示例', 'reset')}</div></div>
@@ -42,7 +44,7 @@ export function layout({ icon, shortcut, automatic, compare, heatmap }) {
         <div class="inspector-footer"><span id="tensor-count">—</span><span id="timing">—</span></div>
       </section>
     </main>
-    <footer class="statusbar"><span class="runtime" id="runtime" data-state="connecting"><i></i><span id="runtime-label">连接执行服务</span></span><span>CPU</span><span id="script-storage-status">浏览器本地存储</span><button id="status-help">快捷键</button></footer>
+    <footer class="statusbar"><span class="runtime" id="runtime" data-state="connecting"><i></i><span id="runtime-label">连接执行服务</span></span><span>CPU</span><span>v0.4.0</span><span id="script-storage-status">浏览器本地存储</span><button id="status-help">快捷键</button></footer>
   </div>
   <dialog id="library-dialog" class="library-dialog" aria-labelledby="library-title"><div class="dialog-header"><h2 id="library-title">示例</h2><button class="icon-button" data-close aria-label="关闭示例库">${icon('close')}</button></div><label class="search-field">${icon('search')}<input id="example-search" placeholder="搜索名称或算子" aria-label="搜索教学示例"></label><div id="example-categories" class="category-filters"></div><div id="library-results" class="library-grid"></div><div class="dialog-footer"><span>在新脚本中打开，不覆盖当前内容</span><span id="library-count"></span></div></dialog>
   <dialog id="command-dialog" class="command-dialog" aria-label="快捷指令"><label class="search-field">${icon('search')}<input id="command-search" placeholder="搜索命令或示例" aria-label="搜索快捷指令"><button class="icon-button" data-close aria-label="关闭快捷指令">${icon('close')}</button></label><div id="command-results"></div><div class="dialog-footer">↑ ↓ 选择 · Enter 执行 · Esc 关闭</div></dialog>
@@ -50,5 +52,7 @@ export function layout({ icon, shortcut, automatic, compare, heatmap }) {
   <dialog id="export-dialog" class="help-dialog" aria-labelledby="export-title"><div class="dialog-header"><h2 id="export-title">导出当前切片</h2><button class="icon-button" data-close aria-label="关闭导出">${icon('close')}</button></div><p class="export-description">包含原始数值、坐标和存储偏移，仅导出当前页。</p><div class="export-actions"><button class="export-card" id="export-csv">${icon('grid')}<strong>CSV</strong><span>逐元素坐标与数值</span></button><button class="export-card" id="export-json">${icon('code')}<strong>JSON</strong><span>数值、shape、stride 与切片信息</span></button></div></dialog>
   <dialog id="script-dialog" class="script-dialog" aria-labelledby="script-dialog-title"><form id="script-form"><div class="dialog-header"><h2 id="script-dialog-title">重命名脚本</h2><button type="button" class="icon-button" data-close aria-label="关闭脚本设置">${icon('close')}</button></div><label class="field-label" for="script-name">名称</label><input id="script-name" maxlength="80" required autocomplete="off"><p id="script-dialog-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" class="secondary-button" data-close>取消</button><button class="primary-button" type="submit">保存</button></div></form></dialog>
   <dialog id="delete-dialog" class="script-dialog" aria-labelledby="delete-title"><div class="dialog-header"><h2 id="delete-title">删除脚本</h2><button class="icon-button" data-close aria-label="关闭删除确认">${icon('close')}</button></div><p id="delete-description"></p><div class="dialog-actions"><button class="secondary-button" data-close>取消</button><button id="confirm-delete" class="danger-button">删除</button></div></dialog>
+  <dialog id="share-dialog" class="help-dialog share-dialog" aria-labelledby="share-title"><div class="dialog-header"><h2 id="share-title">分享实验</h2><button class="icon-button" data-close aria-label="关闭分享">${icon('close')}</button></div><p id="share-summary"></p><label class="field-label" for="share-link">实验链接</label><div class="share-link-row"><input id="share-link" readonly aria-label="实验链接"><button id="copy-experiment-link" class="primary-button">复制链接</button></div><p id="share-link-status" role="status"></p><p id="share-error" class="form-error" role="alert" hidden></p><button id="download-experiment" class="secondary-button">${icon('download')} 下载实验文件</button><p class="share-privacy">链接和文件包含完整代码及查看位置，收到内容的人都可读取。请检查后再发送；文件不包含张量快照或依赖环境。</p></dialog>
+  <input type="file" id="experiment-file-input" accept=".tensorv.json,application/json" hidden>
   <input type="file" id="file-input" accept=".py,.txt" hidden><div id="toast" class="toast" role="status" hidden></div>`;
 }

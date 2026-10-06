@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { BridgeClient } = require('./lib/bridge-client.cjs');
 const { webviewHtml, ImportQueue } = require('./lib/webview.cjs');
+const { readExperimentText, MAX_EXPERIMENT_BYTES } = require('./lib/experiments.cjs');
 
 let controller;
 
@@ -92,7 +93,7 @@ class TensorVController {
     this.imports = new ImportQueue(async message => {
       // Source mapping changes atomically with the delivered import, never
       // merely because another editor command was queued before readiness.
-      const record = this.importRecords.get(message);
+      const record = this.importRecords.get(message) || null;
       const previous = this.source;
       this.source = record;
       const delivered = await panel.webview.postMessage(message);
@@ -140,9 +141,37 @@ class TensorVController {
     await this.imports.enqueue(message);
   }
 
+  async openExperiment() {
+    const selection = await vscode.window.showOpenDialog({
+      title: '打开 TensorV 实验', canSelectMany: false, canSelectFiles: true, canSelectFolders: false,
+      filters: { 'TensorV 实验': ['tensorv.json'], JSON: ['json'] },
+    });
+    if (!selection?.length) return;
+    const text = await readExperimentText(vscode.workspace.fs, selection[0]);
+    // A single queue keeps the newest file/experiment when the view starts.
+    // No Python execution occurs here. The frontend validates JSON and waits
+    // for a separate, explicit Run action.
+    this.open();
+    await this.imports.enqueue({ type: 'tensorv:experiment', text });
+  }
+
   async onMessage(message, panel) {
     if (!message || typeof message !== 'object' || panel !== this.panel) return;
     if (message.type === 'tensorv:ready') { await this.imports.markReady(); return; }
+    if (message.type === 'tensorv:openExperiment') { await this.openExperiment(); return; }
+    if (message.type === 'tensorv:copy') {
+      if (!['string', 'number'].includes(typeof message.id)) return;
+      try {
+        if (typeof message.text !== 'string' || Buffer.byteLength(message.text, 'utf8') > MAX_EXPERIMENT_BYTES * 8) {
+          throw new Error('复制内容必须是文本，且不超过 1 MiB。');
+        }
+        await vscode.env.clipboard.writeText(message.text);
+        await panel.webview.postMessage({ type: 'tensorv:response', id: message.id, ok: true, data: null });
+      } catch (error) {
+        await panel.webview.postMessage({ type: 'tensorv:response', id: message.id, ok: false, message: error.message });
+      }
+      return;
+    }
     if (message.type === 'tensorv:request') {
       if (!['string', 'number'].includes(typeof message.id)) return;
       const generation = this.generation;
@@ -245,6 +274,7 @@ function activate(context) {
     catch (error) { await vscode.window.showErrorMessage(`TensorV：${error.message}`); }
   }));
   register('open', () => { controller.open(); });
+  register('openExperiment', () => controller.openExperiment());
   register('runFile', () => controller.runEditor(false));
   register('runSelection', () => controller.runEditor(true));
   register('selectInterpreter', () => controller.selectInterpreter());
@@ -252,7 +282,7 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
     if (event.affectsConfiguration('tensorv.pythonPath')) void controller.restart(false);
   }));
-  return { version: '0.3.0' };
+  return { version: '0.4.0' };
 }
 
 async function deactivate() { await controller?.dispose(); }

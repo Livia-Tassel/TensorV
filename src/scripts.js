@@ -62,7 +62,7 @@ function readScripts(raw) {
         const code = validateCode(item.code);
         const name = uniqueName(normalizeName(item.name), scripts);
         const updatedAt = Number.isFinite(item.updatedAt) && item.updatedAt >= 0 ? item.updatedAt : Date.now();
-        scripts.push({ id: item.id, name, code, updatedAt });
+        scripts.push({ id: item.id, name, code, updatedAt, ...(item.reviewRequired === true ? { reviewRequired: true } : {}) });
         ids.add(item.id);
       } catch { /* Recover the other valid scripts from a damaged cache. */ }
     }
@@ -105,11 +105,15 @@ export function createScriptStore(storage, initialCode = '') {
     get persisted() { return persisted; },
     list() { return state.scripts.map(script => ({ ...script })); },
     current,
-    create(name = 'untitled.py', code = '') {
+    approveCurrent() {
+      const script = find(state.currentId);
+      if (script.reviewRequired) { delete script.reviewRequired; save(); }
+    },
+    create(name = 'untitled.py', code = '', { reviewRequired = false } = {}) {
       if (state.scripts.length >= MAX_SCRIPTS) throw new Error('最多保存 20 个脚本');
       validateCode(code);
       const resolvedName = uniqueName(normalizeName(name), state.scripts);
-      const script = { id: makeId(), name: resolvedName, code, updatedAt: Date.now() };
+      const script = { id: makeId(), name: resolvedName, code, updatedAt: Date.now(), ...(reviewRequired ? { reviewRequired: true } : {}) };
       state.scripts.push(script);
       state.currentId = script.id;
       save();

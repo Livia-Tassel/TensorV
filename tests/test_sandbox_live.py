@@ -1,7 +1,7 @@
 """Opt-in gVisor integration checks against a locally built sandbox image.
 
 Run serially on an otherwise idle deployment host:
-    TENSORV_SANDBOX_IMAGE=tensorv-sandbox:0.2.0 \
+    TENSORV_SANDBOX_IMAGE=tensorv-sandbox:0.4.0 \
         python3 -m unittest discover -s tests -p test_sandbox_live.py -v
 
 The host imports only the trusted runner and Python's standard library. PyTorch
