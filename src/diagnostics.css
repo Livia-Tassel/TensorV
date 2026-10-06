@@ -1,0 +1,18 @@
+.shape-diagnostic { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--secondary); }
+.shape-diagnostic > strong { color: var(--text); font-size: 12px; }
+.diagnostic-table-wrap { width: 100%; margin: 8px 0; overflow: auto; }
+.shape-diagnostic table { width: max-content; min-width: 180px; border-spacing: 4px; margin-left: -4px; font: 12px var(--mono); }
+.shape-diagnostic th { padding: 3px 6px; color: var(--muted); font-size: 10px; font-weight: 400; text-align: center; }
+.shape-diagnostic th:first-child { max-width: 140px; text-align: left; overflow-wrap: anywhere; }
+.shape-diagnostic tbody th { color: var(--text); font-size: 12px; }
+.shape-diagnostic td { min-width: 42px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 3px; text-align: center; color: var(--text); background: var(--surface); }
+.shape-diagnostic .diagnostic-conflict { border-color: var(--danger); color: var(--danger); font-weight: 600; background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+.shape-diagnostic .diagnostic-implicit { color: var(--muted); border-style: dashed; }
+.shape-diagnostic .diagnostic-empty { border-color: transparent; background: transparent; color: var(--muted); }
+.diagnostic-target { padding: 4px 0; font-size: 12px; }
+.diagnostic-target code { color: var(--text); overflow-wrap: anywhere; }
+.diagnostic-scalar { display: block; color: var(--muted); font-size: 10px; }
+#error-box .shape-diagnostic p { margin: 8px 0; font-family: inherit; white-space: normal; }
+.shape-diagnostic ul { margin: 6px 0 0; padding-left: 18px; }
+.shape-diagnostic li + li { margin-top: 5px; }
+.diagnostic-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

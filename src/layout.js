@@ -20,17 +20,17 @@ export function layout({ icon, shortcut, automatic, compare, heatmap }) {
       <div class="heading-actions"><button class="auto-control" id="auto" role="switch" aria-checked="${automatic}"><span class="switch ${automatic ? 'on' : ''}"></span>自动运行</button><button class="run-button" id="run">${icon('play')}运行<kbd>${shortcut} ↵</kbd></button></div>
     </header>
     <div class="mobile-view-switch" aria-label="工作区域"><button id="mobile-editor" aria-pressed="true">编辑器</button><button id="mobile-inspector" aria-pressed="false">检查器</button></div>
+    <div id="error-box" role="alert" hidden></div>
     <main class="workspace" data-mobile-view="editor">
       <section class="editor-panel panel" aria-label="Python 编辑器">
         <div class="panel-header"><div class="file-tab">${icon('code')}<span id="file-tab-name">playground.py</span></div><div class="toolbar-group">${button('import', '导入 Python 文件', 'upload')}${button('copy-code', '复制代码', 'copy')}${button('download', '下载 Python 代码', 'download')}${button('reset', '恢复当前示例', 'reset')}</div></div>
         <div id="editor"></div>
         <div class="editor-footer"><span id="execution-status" role="status"><i></i>等待运行</span><span id="cursor-position">Ln 1, Col 1</span></div>
-        <div id="error-box" role="alert" hidden></div>
         <div class="console-section"><button id="console-toggle" aria-expanded="false"><span>输出 <span id="output-count">0</span></span><span id="console-chevron">＋</span></button><pre id="console" hidden></pre></div>
       </section>
       <div class="panel-resizer" id="panel-resizer" role="separator" aria-label="调整编辑器宽度" aria-orientation="vertical" aria-valuemin="26" aria-valuemax="52" aria-valuenow="36" tabindex="0"><span></span></div>
       <section class="inspector-panel panel" aria-label="张量检查器">
-        <div class="panel-header"><strong class="panel-title">检查器</strong><div class="toolbar-group"><button id="compare" class="compare-button ${compare ? 'active' : ''}" aria-pressed="${compare}">${icon('layers')}前后对照</button><button id="focus-view" class="icon-button" aria-label="专注画布" aria-pressed="false" title="专注画布">${icon('expand')}</button></div></div>
+        <div class="panel-header"><strong class="panel-title">检查器</strong><div class="toolbar-group"><label id="reference-control" class="reference-control">基准<select id="reference-step" aria-label="对照基准"><option value="previous">上一步</option></select></label><button id="compare" class="compare-button ${compare ? 'active' : ''}" aria-pressed="${compare}">${icon('layers')}前后对照</button><button id="focus-view" class="icon-button" aria-label="专注画布" aria-pressed="false" title="专注画布">${icon('expand')}</button></div></div>
         <div class="trace-section"><div class="trace-header"><div class="section-label"><span>执行步骤</span><span id="step-count">—</span></div><div class="playback-controls">${button('prev-step', '上一步', 'back')}${button('play-steps', '播放步骤', 'play')}${button('next-step', '下一步', 'chevron')}<select id="play-speed" aria-label="步骤播放速度"><option value="1500">1×</option><option value="3000">0.5×</option><option value="750">2×</option></select></div></div><div id="timeline" class="timeline"></div></div>
         <div class="inspector-content">
           <div id="step-heading"></div>

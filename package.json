@@ -1,6 +1,6 @@
 {
   "name": "tensorv",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,10 @@
     "test": "npm run test:python && npm run test:unit",
     "test:python": "node scripts/test-python.mjs",
     "test:unit": "node --test tests/*.test.mjs",
-    "test:ui": "npm run build && playwright test"
+    "test:ui": "npm run build && playwright test",
+    "build:vscode": "node scripts/build-vscode.mjs",
+    "package:vscode": "node scripts/build-vscode.mjs --package",
+    "test:vscode": "node --test extensions/vscode/tests/*.test.cjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.8.0",

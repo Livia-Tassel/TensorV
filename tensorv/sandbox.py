@@ -263,6 +263,50 @@ def _metadata(source):
     return result
 
 
+def _diagnostic(source):
+    """Rebuild small, JSON-only shape hints without importing the engine."""
+    if not isinstance(source, dict) or source.get("kind") not in ("broadcast", "matmul", "reshape", "view"):
+        raise ValueError("维度诊断类型无效。")
+    kind = source["kind"]
+    raw_inputs = source.get("inputs")
+    count = 2 if kind in ("broadcast", "matmul") else 1
+    if not isinstance(raw_inputs, list) or len(raw_inputs) != count:
+        raise ValueError("维度诊断输入无效。")
+    inputs = []
+    for item in raw_inputs:
+        if not isinstance(item, dict) or not isinstance(item.get("shape"), list) or len(item["shape"]) > MAX_RANK:
+            raise ValueError("维度诊断形状无效。")
+        inputs.append({"name": _text(item.get("name"), 256),
+                       "shape": [_int(size, 2 ** 53 - 1) for size in item["shape"]]})
+    raw_axes = source.get("axes")
+    if not isinstance(raw_axes, list) or len(raw_axes) > 2 * MAX_RANK:
+        raise ValueError("维度诊断坐标无效。")
+    axes, seen = [], set()
+    for item in raw_axes:
+        if not isinstance(item, dict):
+            raise ValueError("维度诊断坐标无效。")
+        index = _int(item.get("input"), count - 1)
+        axis = _int(item.get("axis"), MAX_RANK - 1)
+        if axis >= len(inputs[index]["shape"]) or (index, axis) in seen:
+            raise ValueError("维度诊断坐标越界或重复。")
+        seen.add((index, axis))
+        axes.append({"input": index, "axis": axis})
+    suggestions = source.get("suggestions")
+    if not isinstance(suggestions, list) or not 1 <= len(suggestions) <= 4:
+        raise ValueError("维度诊断建议无效。")
+    result = {"kind": kind, "inputs": inputs, "axes": axes,
+              "message": _text(source.get("message"), 2048),
+              "suggestions": [_text(item, 1024) for item in suggestions]}
+    if kind in ("reshape", "view"):
+        target = source.get("target_shape")
+        if not isinstance(target, list) or len(target) > MAX_RANK:
+            raise ValueError("维度诊断目标形状无效。")
+        if any(type(size) is not int or abs(size) > 2 ** 53 - 1 for size in target):
+            raise ValueError("维度诊断目标维度无效。")
+        result["target_shape"] = target[:]
+    return result
+
+
 def validate_result(envelope):
     """Reconstruct a bounded schema; discard all unrecognized worker fields."""
     if not isinstance(envelope, dict) or envelope.get("protocol") != 1:
@@ -287,6 +331,8 @@ def validate_result(envelope):
                            "line": _int(error.get("line"), 20_001)}
         if "hint" in error:
             result["error"]["hint"] = _text(error["hint"])
+        if "diagnostic" in error:
+            result["error"]["diagnostic"] = _diagnostic(error["diagnostic"])
     records = {}
     total_values = 0
     for step in steps:

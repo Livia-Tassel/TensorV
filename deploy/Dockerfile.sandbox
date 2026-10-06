@@ -11,6 +11,6 @@ RUN pip install --no-cache-dir numpy==2.5.3 \
     && pip install --no-cache-dir torch==2.14.1+cpu --index-url https://download.pytorch.org/whl/cpu
 
 WORKDIR /app
-COPY tensorv/__init__.py tensorv/engine.py tensorv/sandbox_worker.py /app/tensorv/
+COPY tensorv/__init__.py tensorv/engine.py tensorv/diagnostics.py tensorv/sandbox_worker.py /app/tensorv/
 USER 65532:65532
 ENTRYPOINT ["python", "-m", "tensorv.sandbox_worker"]

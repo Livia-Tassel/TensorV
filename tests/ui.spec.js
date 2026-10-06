@@ -1,6 +1,74 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
+test('fixed baseline survives step changes and keeps the chosen variable', async ({ page }) => {
+  await importCode(page, 'import torch\nx = torch.arange(6).reshape(2, 3)\ny = x.transpose(0, 1)\nz = y + 10\n');
+  await page.locator('#reference-step').selectOption('0');
+  await page.locator('#tensor-before').selectOption('x');
+  await expect(page.locator('#grid-before .tensor-cell')).toHaveText(['0', '1', '2', '3', '4', '5']);
+  await page.locator('#tensor-after').selectOption('y');
+  await page.locator('#prev-step').click();
+  await expect(page.locator('#tensor-after')).toHaveValue('y');
+  await expect(page.locator('#card-before .before-after')).toContainText('基准 · 第 2 行');
+  await expect(page.locator('#grid-before .tensor-cell')).toHaveText(['0', '1', '2', '3', '4', '5']);
+  await page.locator('#next-step').click();
+  await expect(page.locator('#tensor-after')).toHaveValue('y');
+  await page.locator('#tensor-after').selectOption('z');
+  await expect(page.locator('#grid-after .tensor-cell')).toHaveText(['10', '13', '11', '14', '12', '15']);
+  await page.locator('#run').click();
+  await updated(page);
+  await expect(page.locator('#reference-step')).toHaveValue('previous');
+});
+
+test('shape errors retain raw errors and show dimensions even in focused canvas', async ({ page }) => {
+  await page.locator('#focus-view').click();
+  const executed = page.waitForResponse((response) => response.url().endsWith('/api/execute'));
+  await page.locator('#file-input').setInputFiles({ name: 'broadcast-error.py', mimeType: 'text/x-python', buffer: Buffer.from('import torch\nx = torch.zeros(3, 4)\nbias = torch.zeros(3)\ny = x + bias\n') });
+  await executed;
+  await expect(page.locator('#error-box')).toBeVisible();
+  await expect(page.locator('#error-box')).toContainText('RuntimeError');
+  await expect(page.locator('#error-box')).toContainText('广播');
+  await expect(page.locator('#error-box')).toContainText('bias');
+  await expect(page.locator('#run')).toBeEnabled();
+  await expectViewportLayout(page);
+});
+
+test('VS Code transport imports code and uses host saving without browser API requests', async ({ page, request }) => {
+  const hostMessages = [];
+  await page.exposeBinding('sendToTensorVHost', async (_, message) => {
+    hostMessages.push(message);
+    if (message.type !== 'tensorv:request') return;
+    const response = await request.post(`http://127.0.0.1:8765/api/${message.action}`, { data: message.payload });
+    const data = await response.json();
+    await page.evaluate((reply) => window.postMessage(reply, '*'), { type: 'tensorv:response', id: message.id, ok: response.ok(), data, message: data.message });
+  });
+  await page.addInitScript(() => {
+    let state;
+    window.acquireVsCodeApi = () => ({ getState: () => state, setState: (value) => { state = value; }, postMessage: (message) => window.sendToTensorVHost(message) });
+  });
+  const apiRequests = [];
+  page.on('request', (request) => { if (request.url().includes('/api/')) apiRequests.push(request.url()); });
+  await page.reload();
+  await expect(page.locator('#runtime-label')).toContainText('等待运行');
+  await expect(page.locator('#auto')).toHaveAttribute('aria-checked', 'false');
+  expect(hostMessages.filter((message) => message.type === 'tensorv:request')).toHaveLength(0);
+  const imported = { type: 'tensorv:import', code: 'import torch\nx = torch.tensor([12, 24])\ny = x + 1\n', title: 'from-editor.py', source: { uri: 'file:///example.py', lineOffset: 8 } };
+  await page.evaluate((message) => window.postMessage(message, '*'), imported);
+  await updated(page);
+  await expect(page.locator('#grid-after .tensor-cell')).toHaveText(['13', '25']);
+  await expect(page.locator('.workspace')).toHaveClass(/focus-mode/);
+  await page.locator('#reveal-source').click();
+  await expect.poll(() => hostMessages.some((message) => message.type === 'tensorv:revealLine' && message.line === 3)).toBe(true);
+  await page.locator('#export-data').click();
+  await page.locator('#export-json').click();
+  await expect.poll(() => hostMessages.some((message) => message.type === 'tensorv:save' && message.filename.endsWith('.json') && message.content.includes('visible_slice'))).toBe(true);
+  const count = await page.locator('#script-list .script-row').count();
+  await page.evaluate((message) => window.postMessage(message, '*'), { ...imported, code: 'import torch\nx = torch.tensor([31])\n' });
+  await expect(page.locator('#grid-after .tensor-cell')).toHaveText(['31']);
+  await expect(page.locator('#script-list .script-row')).toHaveCount(count);
+  expect(apiRequests).toEqual([]);
+});
+
 let browserErrors;
 
 async function updated(page) {

@@ -1,0 +1,51 @@
+{
+  "name": "tensorv",
+  "displayName": "TensorV — PyTorch Tensor Inspector",
+  "description": "Inspect PyTorch tensor shapes, values, strides and storage from Python files and selections.",
+  "version": "0.3.0",
+  "publisher": "livia-tassel",
+  "license": "UNLICENSED",
+  "repository": { "type": "git", "url": "https://github.com/Livia-Tassel/TensorV.git" },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Visualization", "Programming Languages"],
+  "keywords": ["pytorch", "tensor", "python", "visualization"],
+  "main": "./extension.cjs",
+  "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": "limited", "description": "TensorV 仅在受信任的工作区执行 Python。", "restrictedConfigurations": ["tensorv.pythonPath"] },
+    "virtualWorkspaces": { "supported": false, "description": "需要能运行 Python 的本地或远程扩展宿主。" }
+  },
+  "contributes": {
+    "commands": [
+      { "command": "tensorv.open", "title": "打开张量检查器", "category": "TensorV", "icon": "$(graph)" },
+      { "command": "tensorv.runFile", "title": "运行当前 Python 文件", "category": "TensorV", "icon": "$(play)", "enablement": "isWorkspaceTrusted" },
+      { "command": "tensorv.runSelection", "title": "运行所选 Python 代码", "category": "TensorV", "enablement": "isWorkspaceTrusted" },
+      { "command": "tensorv.selectInterpreter", "title": "选择 Python 解释器", "category": "TensorV", "enablement": "isWorkspaceTrusted" },
+      { "command": "tensorv.restart", "title": "重启执行环境", "category": "TensorV", "enablement": "isWorkspaceTrusted" }
+    ],
+    "menus": {
+      "editor/title": [
+        { "command": "tensorv.runFile", "when": "editorLangId == python && isWorkspaceTrusted", "group": "navigation@50" }
+      ],
+      "editor/context": [
+        { "command": "tensorv.runFile", "when": "editorLangId == python && isWorkspaceTrusted", "group": "tensorv@1" },
+        { "command": "tensorv.runSelection", "when": "editorLangId == python && editorHasSelection && isWorkspaceTrusted", "group": "tensorv@2" }
+      ]
+    },
+    "configuration": {
+      "title": "TensorV",
+      "properties": {
+        "tensorv.pythonPath": {
+          "type": "string", "default": "", "scope": "resource",
+          "description": "Python 可执行文件路径（不含命令参数）。为空时依次使用工作区 .venv、Python 扩展所选解释器、PATH 中的 python。支持 ${workspaceFolder}。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-vscode.mjs",
+    "package": "node ../../scripts/build-vscode.mjs --package",
+    "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": { "@vscode/vsce": "^3.6.0" }
+}

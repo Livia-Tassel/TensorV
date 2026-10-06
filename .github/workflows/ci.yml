@@ -31,9 +31,21 @@ jobs:
           python -m pip install 'numpy>=1.26,<3'
           npx playwright install --with-deps chromium
       - name: Unit and protocol tests
-        run: npm test
+        run: |
+          npm test
+          npm run test:vscode
       - name: Build and browser tests
         run: npm run test:ui
+      - name: Package VS Code extension
+        run: |
+          npm ci --prefix extensions/vscode
+          npm run package:vscode
+      - name: Upload VS Code installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tensorv-vscode
+          path: extensions/vscode/*.vsix
+          retention-days: 30
       - name: Upload failed browser diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

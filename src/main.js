@@ -10,6 +10,9 @@ import { formatValue, sliceCSV, distribution } from './inspect';
 import './style.css';
 import { layout } from './layout';
 import { createScriptStore } from './scripts';
+import { host } from './host';
+import { renderDiagnostic } from './diagnostics';
+import './vscode.css';
 
 const icons = {
   sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
@@ -47,12 +50,13 @@ const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<':
 const fmt = (v) => formatValue(v, precision);
 const shape = (s) => `[${s.join(', ')}]`;
 const dimColor = (axis) => ['#8571db', '#34a28a', '#df9a49', '#5d92cf', '#cb739b', '#729748', '#9d83bc', '#599da5'][axis % 8];
-function readLocal(key, fallback) { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } }
-function saveLocal(key, value) { try { localStorage.setItem(key, value); } catch { /* Storage may be unavailable. */ } }
+const storage = host || { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) };
+function readLocal(key, fallback) { try { return storage.getItem(key) ?? fallback; } catch { return fallback; } }
+function saveLocal(key, value) { try { storage.setItem(key, value); } catch { /* Storage may be unavailable. */ } }
 
 const scripts = createScriptStore({
   getItem: (key) => readLocal(key, null),
-  setItem: (key, value) => localStorage.setItem(key, value),
+  setItem: (key, value) => storage.setItem(key, value),
 }, examples[0].code);
 const editorStates = new Map();
 let editingScriptId = scripts.current().id;
@@ -60,6 +64,9 @@ let result = null;
 let selected = 0;
 let currentName = null;
 let beforeName = null;
+let referenceStep = null;
+let sourceRecord = null;
+const sourceImports = new Map();
 let compare = readLocal('tensorv:compare', 'true') === 'true';
 let precision = Number(readLocal('tensorv:precision', '4')) || 4;
 let heatmap = readLocal('tensorv:heatmap', 'true') === 'true';
@@ -74,7 +81,7 @@ const configCache = new Map();
 const sliceCache = new Map();
 const shortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
 document.documentElement.dataset.theme = readLocal('tensorv:theme', 'dark');
-let automatic = readLocal('tensorv:auto', 'true') === 'true';
+let automatic = readLocal('tensorv:auto', host ? 'false' : 'true') === 'true';
 let busy = false;
 let timer;
 let pending = false;
@@ -146,6 +153,7 @@ function markStatus(text, type = '') {
   $('#execution-status').innerHTML = `<i></i>${escape(text)}`;
 }
 async function api(path, payload) {
+  if (host) return host.request(path, payload);
   const response = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(45000) });
   if (!response.headers.get('content-type')?.includes('application/json')) {
     if (response.status === 429) throw new Error('请求过于频繁，请稍后再运行，或关闭自动运行。');
@@ -191,6 +199,7 @@ async function execute() {
       selected = Math.max(0, next.steps.length - 1);
       currentName = null;
       beforeName = null;
+      referenceStep = null;
       configCache.clear();
       sliceCache.clear();
       stale = false;
@@ -208,7 +217,7 @@ async function execute() {
     stale = true;
     $('#runtime').dataset.state = 'error';
     $('#runtime-label').textContent = '服务未就绪';
-    showError({ type: '执行服务', message: error.message, hint: '稍后重新运行；自行部署时请检查服务状态。' });
+    showError({ type: '执行服务', message: error.message, hint: host ? '检查 TensorV 使用的 Python 解释器，或重启执行环境。' : '稍后重新运行；自行部署时请检查服务状态。' });
     $('#canvases').classList.add('stale');
     markStatus('连接或执行失败', 'error');
   } finally {
@@ -222,20 +231,18 @@ async function execute() {
 function showError(error) {
   const el = $('#error-box');
   el.hidden = !error;
-  if (error) el.innerHTML = `<strong>${escape(error.type)}${error.line ? ` · 第 ${error.line} 行` : ''}</strong><p>${escape(error.message)}</p>${error.hint ? `<small>${escape(error.hint)}</small>` : ''}`;
+  if (error) el.innerHTML = `<strong>${escape(error.type)}${error.line ? ` · 第 ${error.line} 行` : ''}</strong><p>${escape(error.message)}</p>${error.hint ? `<small>${escape(error.hint)}</small>` : ''}${renderDiagnostic(error.diagnostic, escape)}`;
 }
 function selectStep(index, fromPlayback = false) {
   if (!result?.steps.length || stale || busy) return;
   if (!fromPlayback) stopPlayback();
   index = Math.max(0, Math.min(result.steps.length - 1, index));
   selected = index;
-  currentName = null;
-  beforeName = null;
   render();
 }
 function getPair() {
   const step = result?.steps[selected];
-  const prev = result?.steps[selected - 1];
+  const prev = result?.steps[referenceStep ?? selected - 1];
   if (!step) return {};
   const after = step.tensors.find((t) => t.name === currentName) || step.tensors.find((t) => step.outputs.includes(t.name)) || step.tensors.at(-1);
   const before = prev?.tensors.find((t) => t.name === beforeName) || prev?.tensors.find((t) => t.name === after?.name) || prev?.tensors.find((t) => step.inputs.includes(t.name)) || prev?.tensors.at(-1);
@@ -248,6 +255,10 @@ function render() {
   displayed.before = null;
   displayed.after = null;
   $('#canvases').classList.toggle('stale', stale);
+  $('#reference-control').hidden = !compare;
+  $('#reference-step').innerHTML = '<option value="previous">上一步</option>' + (result?.steps || []).map((step, index) => `<option value="${index}">第 ${step.line} 行 · ${escape(step.outputs[0] || step.tensors.at(-1)?.name || 'Tensor')}</option>`).join('');
+  $('#reference-step').value = referenceStep === null ? 'previous' : String(referenceStep);
+  $('#reference-step').disabled = !result?.steps.length || stale;
   if (!result?.steps.length) {
     $('#timeline').innerHTML = '<span class="timeline-placeholder">无执行记录</span>';
     $('#step-count').textContent = '0 个步骤';
@@ -272,7 +283,9 @@ function render() {
   const selectedLines = [];
   for (let line = step.line; line <= step.end_line; line++) selectedLines.push(line);
   editor.dispatch({ effects: activeLine.of(selectedLines) });
-  $('#step-heading').innerHTML = `<div class="step-caption"><span class="section-label">${icon('code')}当前操作</span><span class="line-label">第 ${step.line} 行</span></div><code class="operation-code">${escape(step.source)}</code>`;
+  const linkedSource = host && sourceRecord?.scriptId === editingScriptId && sourceRecord.code === editor.state.doc.toString();
+  $('#step-heading').innerHTML = `<div class="step-caption"><span class="section-label">${icon('code')}当前操作</span>${linkedSource ? `<button class="text-button" id="reveal-source" title="在 VS Code 中定位当前语句">返回源码 ${icon('external')}</button>` : ''}<span class="line-label">第 ${step.line} 行</span></div><code class="operation-code">${escape(step.source)}</code>`;
+  if ($('#reveal-source')) $('#reveal-source').onclick = () => host.revealLine(step.line);
   $('#canvases').classList.toggle('single', !compare || !before);
   $('#canvases').innerHTML = `${compare && before ? canvasHTML('before', before, prev.tensors) : ''}${canvasHTML('after', after, step.tensors)}`;
   viewConfigs = { before: before ? defaultConfig(before) : null, after: defaultConfig(after) };
@@ -299,7 +312,7 @@ function dimOptions(tensor, selectedAxis) {
 function canvasHTML(side, tensor, tensors) {
   const rank = tensor.shape.length;
   return `<article class="tensor-card ${side}" id="card-${side}">
-    <div class="tensor-card-heading"><span class="before-after"><i></i>${side === 'before' ? '操作前' : '操作后'}</span><select class="tensor-select" id="tensor-${side}" aria-label="${side === 'before' ? '操作前' : '操作后'}的变量">${tensorOptions(tensors, tensor)}</select></div>
+    <div class="tensor-card-heading"><span class="before-after"><i></i>${side === 'before' ? (referenceStep === null ? '操作前' : `基准 · 第 ${result.steps[referenceStep].line} 行`) : '操作后'}</span><select class="tensor-select" id="tensor-${side}" aria-label="${side === 'before' ? '操作前' : '操作后'}的变量">${tensorOptions(tensors, tensor)}</select></div>
     <div class="shape-chips">${tensor.shape.length ? tensor.shape.map((size, axis) => `<span class="dim-chip" style="--dim-color:${dimColor(axis)}"><small>dim ${axis}</small><strong>${size}</strong></span>`).join('<span class="shape-times">×</span>') : '<span class="scalar-chip">标量 · shape []</span>'}<span class="element-count">${tensor.numel.toLocaleString()} 个元素</span></div>
     ${tensor.available ? `<div class="axis-controls">${rank >= 2 ? `<label><span class="axis-dot" style="background:${dimColor(rank - 2)}"></span>行<select id="row-${side}" aria-label="${side} 行维度">${dimOptions(tensor, rank - 2)}</select></label>` : ''}${rank ? `<label><span class="axis-dot" style="background:${dimColor(rank - 1)}"></span>列<select id="col-${side}" aria-label="${side} 列维度">${dimOptions(tensor, rank - 1)}</select></label>` : '<span>零维 Tensor</span>'}</div><div class="fixed-controls" id="fixed-${side}"></div><div class="grid-viewport" id="grid-${side}"></div><div class="grid-paging" id="paging-${side}"></div>` : `<div class="unavailable">${icon('info')}<p>${escape(tensor.warning || '无法展示数值')}</p></div>`}
     <div class="tensor-card-footer"><span><i class="storage-dot"></i>${tensor.storage || '—'}<span class="muted"> · ${tensor.dtype}</span></span><span>${tensor.contiguous ? '连续' : '非连续'}${tensor.storage ? ` · offset ${tensor.offset}` : ''}</span></div>
@@ -506,6 +519,7 @@ function formatBytes(bytes) {
 }
 function updatePlayback() {
   const usable = Boolean(result?.steps.length) && !stale && !busy;
+  $('#reference-step').disabled = !usable;
   $('#prev-step').disabled = !usable || selected === 0;
   $('#next-step').disabled = !usable || selected === result?.steps.length - 1;
   $('#play-steps').disabled = !usable || result.steps.length < 2;
@@ -561,8 +575,9 @@ function updateSession() {
   document.title = `${current.name} — TensorV`;
   const codeMatches = current.code === editor.state.doc.toString();
   $('#document-state').textContent = !codeMatches ? '超出长度上限 · 未保存' : scripts.persisted ? '已保存' : '未保存';
-  $('#script-storage-status').textContent = scripts.persisted ? '浏览器本地存储' : '存储不可用 · 请下载代码';
+  $('#script-storage-status').textContent = scripts.persisted ? (host ? 'VS Code 面板副本' : '浏览器本地存储') : '存储不可用 · 请下载代码';
   $('#reset').disabled = !resetExample;
+  if ($('#reveal-source')) $('#reveal-source').hidden = sourceRecord?.scriptId !== editingScriptId || sourceRecord.code !== editor.state.doc.toString();
   document.querySelectorAll('#sidebar-examples [data-example]').forEach((button) => {
     button.classList.toggle('active', button.dataset.example === activeExample);
     button.setAttribute('aria-current', button.dataset.example === activeExample ? 'true' : 'false');
@@ -588,6 +603,7 @@ function activateScript(script) {
   activeExample = examples.find((e) => e.code === script.code)?.id;
   resetExample = readLocal(`tensorv:lesson:${script.id}`, activeExample || '');
   result = null; currentName = null; beforeName = null; stale = false;
+  referenceStep = null;
   configCache.clear(); sliceCache.clear();
   $('#console').textContent = ''; $('#output-count').textContent = '0';
   const cursor = editor.state.doc.lineAt(editor.state.selection.main.head);
@@ -698,6 +714,7 @@ function renderLibrary() {
 }
 function openLibrary() { renderLibrary(); openDialog('#library-dialog'); $('#example-search').focus(); }
 function downloadFile(content, name, type) {
+  if (host) { host.save(name, content); return; }
   const url = URL.createObjectURL(new Blob([content], { type }));
   const anchor = document.createElement('a');
   anchor.href = url; anchor.download = name; anchor.click();
@@ -712,7 +729,7 @@ function exportData(kind) {
     const { slice: defaultSlice, ...metadata } = tensor;
     downloadFile(JSON.stringify({ scope: 'visible_slice', step: selected + 1, source: result.steps[selected].source, tensor: metadata, slice }, null, 2), `${name}.json`, 'application/json');
   }
-  $('#export-dialog').close(); toast('当前切片已导出。');
+  $('#export-dialog').close(); toast(host ? '已打开保存对话框。' : '当前切片已导出。');
 }
 function toggleTheme() {
   const dark = document.documentElement.dataset.theme !== 'dark';
@@ -770,6 +787,11 @@ $('#compare').onclick = () => {
   $('#compare').setAttribute('aria-pressed', String(compare));
   render();
 };
+$('#reference-step').onchange = (event) => {
+  referenceStep = event.target.value === 'previous' ? null : Number(event.target.value);
+  beforeName = null;
+  render();
+};
 $('#console-toggle').onclick = () => {
   const show = $('#console').hidden;
   $('#console').hidden = !show;
@@ -778,7 +800,7 @@ $('#console-toggle').onclick = () => {
 };
 $('#download').onclick = () => {
   downloadFile(editor.state.doc.toString(), scripts.current().name, 'text/x-python');
-  toast('Python 代码已下载。');
+  toast(host ? '已打开保存对话框。' : 'Python 代码已下载。');
 };
 $('#copy-code').onclick = async () => {
   try { await navigator.clipboard.writeText(editor.state.doc.toString()); toast('代码已复制到剪贴板。'); }
@@ -913,4 +935,38 @@ updateSidebarAccess();
 updateSession();
 updateThemeButton();
 render();
-execute();
+if (host) {
+  document.body.classList.add('vscode-workspace');
+  $('#app').classList.add('sidebar-collapsed');
+  updateSidebarAccess();
+  $('#runtime-label').textContent = '本地 Python · 等待运行';
+  function followTheme() {
+    document.documentElement.dataset.theme = document.body.classList.contains('vscode-light') || document.body.classList.contains('vscode-high-contrast-light') ? 'light' : 'dark';
+    updateThemeButton();
+  }
+  followTheme();
+  new MutationObserver(followTheme).observe(document.body, { attributes: true, attributeFilter: ['data-vscode-theme-id'] });
+  host.onImport((message) => {
+    if (!flushDraft()) return;
+    const key = `${message.source?.uri || ''}:${message.source?.lineOffset || 0}`;
+    const previous = sourceImports.get(key);
+    const existing = scripts.list().find((item) => item.id === previous?.id && item.code === previous.code);
+    editorStates.set(editingScriptId, editor.state);
+    let script;
+    try {
+      if (existing) {
+        scripts.select(existing.id);
+        script = scripts.update(message.code);
+        editorStates.delete(script.id);
+      } else script = scripts.create(message.title || 'source.py', message.code);
+    } catch (error) { toast(error.message); return; }
+    sourceRecord = { scriptId: script.id, code: message.code };
+    sourceImports.set(key, { id: script.id, code: message.code });
+    activateScript(script);
+    setMobileView('inspector');
+    $('.workspace').classList.add('focus-mode');
+    $('#focus-view').setAttribute('aria-pressed', 'true');
+    $('#focus-view').setAttribute('aria-label', '退出专注画布');
+  });
+  host.ready();
+} else execute();

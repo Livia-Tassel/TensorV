@@ -11,6 +11,8 @@ import uuid
 
 import torch
 
+from tensorv.diagnostics import diagnose_shape
+
 MAX_ELEMENTS = 100_000
 MAX_BYTES = 64 * 1024 * 1024
 MAX_STEPS = 128
@@ -103,6 +105,7 @@ class Engine:
         namespace = {"torch": torch, "__name__": "__tensorv__"}
         current = {"line": 1, "inputs": []}
         source_lines = code.splitlines()
+        diagnostic_statements = {}
         torch.manual_seed(0)
 
         def before(line, loaded):
@@ -174,6 +177,11 @@ class Engine:
             tree = ast.parse(code, filename="<tensorv>")
             # Validate the uninstrumented program first (including future imports).
             compile(tree, "<tensorv>", "exec")
+            for statement in tree.body:
+                # Multiple statements on one line cannot be attributed reliably
+                # from the traceback. Keep their original PyTorch error only.
+                line = statement.lineno
+                diagnostic_statements[line] = None if line in diagnostic_statements else statement
             instrumented = []
             for index, statement in enumerate(tree.body):
                 line, end = statement.lineno, statement.end_lineno
@@ -207,8 +215,15 @@ class Engine:
                 if frame.filename == "<tensorv>":
                     line = frame.lineno
             error = {"type": type(exc).__name__, "message": str(exc), "line": line}
-            if "view size is not compatible" in str(exc):
+            if "view size is not compatible" in error["message"]:
                 error["hint"] = "当前 stride 不满足 view 的要求。试试 reshape(...)，或 contiguous().view(...)。"
+            try:
+                diagnostic = diagnose_shape(diagnostic_statements.get(current["line"]), namespace, exc, line)
+                if diagnostic is not None:
+                    error["diagnostic"] = diagnostic
+            except Exception:
+                # Explanatory metadata must never replace the original error.
+                pass
         return {"run_id": self.run_id, "steps": steps, "error": error,
                 "stdout": output.getvalue(), "elapsed_ms": round((time.perf_counter() - started) * 1000),
                 "torch_version": torch.__version__}

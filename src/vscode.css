@@ -1,0 +1,31 @@
+.reference-control { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.reference-control select { max-width: 150px; height: 28px; padding: 0 5px; font-size: 11px; }
+#reveal-source { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+#reveal-source .icon { width: 13px; height: 13px; }
+body.vscode-workspace {
+  --page: var(--vscode-editor-background, #212121);
+  --surface: var(--vscode-editor-background, #212121);
+  --sidebar: var(--vscode-sideBar-background, #171717);
+  --surface-alt: var(--vscode-sideBar-background, #262626);
+  --editor-bg: var(--vscode-editor-background, #1c1c1c);
+  --text: var(--vscode-editor-foreground, #e8e8e8);
+  --secondary: var(--vscode-foreground, #b3b3b3);
+  --muted: var(--vscode-descriptionForeground, #969696);
+  --border: var(--vscode-panel-border, #363636);
+  --accent: var(--vscode-textLink-foreground, #8ab4f8);
+  --hover: var(--vscode-list-hoverBackground, #2b2b2b);
+  --selected: var(--vscode-list-inactiveSelectionBackground, #343434);
+  --selection: var(--vscode-editor-selectionBackground, #3d4e68);
+  --danger: var(--vscode-errorForeground, #f09696);
+  padding: 0;
+  font-family: var(--vscode-font-family, sans-serif);
+  color: var(--text);
+  background: var(--page);
+}
+.vscode-workspace #theme { display: none; }
+.vscode-workspace .topbar { height: 43px; }
+.vscode-workspace .document-state { display: none; }
+@media (max-width: 560px) {
+  .reference-control { font-size: 0; gap: 0; }
+  .reference-control select { max-width: 106px; }
+}
