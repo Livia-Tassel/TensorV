@@ -2,7 +2,7 @@
   "name": "tensorv",
   "displayName": "TensorV — PyTorch Tensor Inspector",
   "description": "Inspect PyTorch tensor shapes, values, strides and storage from Python files and selections.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "livia-tassel",
   "license": "UNLICENSED",
   "repository": { "type": "git", "url": "https://github.com/Livia-Tassel/TensorV.git" },

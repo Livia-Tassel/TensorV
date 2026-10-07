@@ -38,7 +38,7 @@ test('VS Code transport imports code and uses host saving without browser API re
   await page.exposeBinding('sendToTensorVHost', async (_, message) => {
     hostMessages.push(message);
     if (message.type !== 'tensorv:request') return;
-    const response = await request.post(`http://127.0.0.1:8765/api/${message.action}`, { data: message.payload });
+    const response = await request.post(`http://127.0.0.1:${process.env.TENSORV_TEST_PORT || 8765}/api/${message.action}`, { data: message.payload });
     const data = await response.json();
     await page.evaluate((reply) => window.postMessage(reply, '*'), { type: 'tensorv:response', id: message.id, ok: response.ok(), data, message: data.message });
   });
@@ -431,7 +431,7 @@ test('delayed slices remain consistent through precision redraw and comparison t
 });
 
 test('production build serves executable JavaScript and real tensor output', async ({ page, request }) => {
-  await page.goto('http://127.0.0.1:8765/');
+  await page.goto(`http://127.0.0.1:${process.env.TENSORV_TEST_PORT || 8765}/`);
   await updated(page);
   const scripts = await page.locator('script[src]').evaluateAll((nodes) => nodes.map((node) => node.src));
   expect(scripts.length).toBeGreaterThan(0);

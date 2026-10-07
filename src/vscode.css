@@ -26,6 +26,10 @@ body.vscode-workspace {
 .vscode-workspace #vscode-download { display: none; }
 .vscode-workspace .topbar { height: 43px; }
 .vscode-workspace .document-state { display: none; }
+.source-bar { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--surface-alt); font-size: 11px; }
+#source-state { flex-shrink: 0; color: var(--secondary); }
+#source-file { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+#edit-source { white-space: nowrap; margin-left: auto; }
 @media (max-width: 560px) {
   .reference-control { font-size: 0; gap: 0; }
   .reference-control select { max-width: 106px; }

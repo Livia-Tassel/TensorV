@@ -10,7 +10,7 @@ TensorV 是面向 PyTorch 的张量检查工具。它执行 Python 代码，记�
 
 公共演示实例通过 HTTPS 访问，Python 代码在服务器上的独立 gVisor 沙箱中执行，访问者无需安装环境或保持本地服务运行。当前采用单执行并发，单次执行默认限制为 20 秒、1 核 CPU 和 512 MiB 内存，并设置访问频率和会话限额；繁忙时请稍后重试。
 
-当前源码版本为 **0.4.0**。版本能力以实际部署的网页或安装的 VSIX 为准；仅构建或推送代码不会自动替换正在运行的公共实例。
+当前源码版本为 **0.4.1**。版本能力以实际部署的网页或安装的 VSIX 为准；仅构建或推送代码不会自动替换正在运行的公共实例。
 
 脚本保存在访问者的浏览器中，运行时提交到服务器。不要向公共实例提交密钥或机密数据。需要本机执行或独立资源时，可按下文进行本地部署，或参照[服务器部署](docs/server-deployment.md)自行运行。
 
@@ -28,15 +28,17 @@ TensorV 是面向 PyTorch 的张量检查工具。它执行 Python 代码，记�
 | 数据分析 | 快照统计、当前切片分布、CSV / JSON 导出 |
 | 实验分享 | 链接及 `.tensorv.json` 文件保存代码、环境记录、步骤、变量、切片与对照基准；打开后先预览再运行 |
 | 示例库 | 13 个可编辑示例，覆盖形状变换、广播、归约、矩阵乘法、内存视图与自动求导 |
-| VS Code 插件 | 运行当前 Python 文件或选区、选择本机解释器、返回源码位置、保存导出文件 |
+| VS Code 插件 | 文件源码联动、独立选区执行、本机解释器选择、源码定位及文件导出 |
 
 ## VS Code 中使用
 
-下载并安装 [tensorv-0.4.0.vsix](https://tensorv.43.135.182.151.nip.io/downloads/tensorv-0.4.0.vsix)，打开可信工作区，然后在 Python 编辑器中选择 **TensorV: 运行当前 Python 文件** 或 **TensorV: 运行所选 Python 代码**。检查器在 VS Code 内打开，使用扩展宿主上的 Python；无需手动启动 HTTP 服务。解释器需要 Python 3.10+、`torch` 和 `numpy`，安装 VSIX 后日常使用无需 Node.js。
+下载并安装 [tensorv-0.4.1.vsix](https://tensorv.43.135.182.151.nip.io/downloads/tensorv-0.4.1.vsix)，打开可信工作区，然后在 Python 编辑器中选择 **TensorV: 运行当前 Python 文件** 或 **TensorV: 运行所选 Python 代码**。检查器在 VS Code 内打开，使用扩展宿主上的 Python；无需手动启动 HTTP 服务。解释器需要 Python 3.10+、`torch` 和 `numpy`，安装 VSIX 后日常使用无需 Node.js。
 
-插件尚未上架 Marketplace。可从对应成功的 GitHub Actions 运行产物中下载 VSIX 归档，或在源码根目录依次执行 `npm ci`、`npm ci --prefix extensions/vscode`、`npm run package:vscode`，生成 `extensions/vscode/tensorv-0.4.0.vsix`。安装步骤、解释器设置和运行边界见 [VS Code 插件](docs/vscode.md)。
+插件尚未上架 Marketplace。可从对应成功的 GitHub Actions 运行产物中下载 VSIX 归档，或在源码根目录依次执行 `npm ci`、`npm ci --prefix extensions/vscode`、`npm run package:vscode`，生成 `extensions/vscode/tensorv-0.4.1.vsix`。安装步骤、解释器设置和运行边界见 [VS Code 插件](docs/vscode.md)。
 
-文件或选区会作为副本独立执行，不读取调试器中的变量，不修改源文件，也不会自动补齐选区之外的上下文。插件执行可信 Python，具有所选解释器的文件和网络权限。
+运行全文后，检查器与该文件建立源码联动：左侧未保存的修改也会同步，开启自动运行时停止编辑约 650 ms 后执行；关闭时标记结果待更新，右侧“运行”读取最新源码。绑定代码在检查器中为只读镜像，仍在原 Python 编辑器中修改。
+
+选区按独立副本执行，不会自动补齐上下文或隐式执行整个文件。插件不读取调试器中的变量；示例和导入实验保持独立。插件执行可信 Python，具有所选解释器的文件和网络权限。
 
 ## 分享实验
 

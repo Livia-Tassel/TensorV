@@ -12,7 +12,7 @@ export function layout({ icon, shortcut, automatic, compare, heatmap }) {
       <section class="sidebar-section"><div class="sidebar-section-heading"><span>脚本</span>${button('sidebar-import', '导入 Python 文件', 'upload')}</div><div id="script-list"></div></section>
       <section class="sidebar-section"><div class="sidebar-section-heading"><span>示例</span><button class="text-button" id="browse-examples" title="搜索全部示例" aria-label="浏览示例库">${icon('search')}</button></div><div id="sidebar-examples" class="sidebar-examples"></div></section>
     </div>
-    <div class="sidebar-bottom"><a id="vscode-download" class="sidebar-action" href="https://tensorv.43.135.182.151.nip.io/downloads/tensorv-0.4.0.vsix">${icon('download')}<span>VS Code 插件</span></a><button class="sidebar-action" id="theme" aria-label="切换浅色主题">${icon('sun')}<span>浅色主题</span></button><button class="sidebar-action" id="help" aria-label="使用帮助">${icon('info')}<span>使用帮助</span></button><a class="sidebar-action" href="https://docs.pytorch.org/docs/stable/tensors.html" target="_blank" rel="noreferrer">${icon('external')}<span>PyTorch 文档</span></a></div>
+    <div class="sidebar-bottom"><a id="vscode-download" class="sidebar-action" href="https://tensorv.43.135.182.151.nip.io/downloads/tensorv-0.4.1.vsix">${icon('download')}<span>VS Code 插件</span></a><button class="sidebar-action" id="theme" aria-label="切换浅色主题">${icon('sun')}<span>浅色主题</span></button><button class="sidebar-action" id="help" aria-label="使用帮助">${icon('info')}<span>使用帮助</span></button><a class="sidebar-action" href="https://docs.pytorch.org/docs/stable/tensors.html" target="_blank" rel="noreferrer">${icon('external')}<span>PyTorch 文档</span></a></div>
   </aside>
   <button class="sidebar-backdrop" id="sidebar-backdrop" aria-label="关闭侧栏" hidden></button>
   <div class="app-shell">
@@ -21,6 +21,7 @@ export function layout({ icon, shortcut, automatic, compare, heatmap }) {
       <div class="heading-actions"><button class="share-button" id="share-experiment" aria-label="分享实验">${icon('external')}<span>分享</span></button><button class="auto-control" id="auto" role="switch" aria-checked="${automatic}"><span class="switch ${automatic ? 'on' : ''}"></span>自动运行</button><button class="run-button" id="run">${icon('play')}运行<kbd>${shortcut} ↵</kbd></button></div>
     </header>
     <div class="mobile-view-switch" aria-label="工作区域"><button id="mobile-editor" aria-pressed="true">编辑器</button><button id="mobile-inspector" aria-pressed="false">检查器</button></div>
+    <div id="source-bar" class="source-bar" hidden><span id="source-state"></span><span id="source-file"></span><button id="edit-source" class="text-button">在源文件中编辑</button></div>
     <div id="error-box" role="alert" hidden></div>
     <div id="experiment-notice" class="experiment-notice" role="status" hidden></div>
     <main class="workspace" data-mobile-view="editor">
@@ -44,7 +45,7 @@ export function layout({ icon, shortcut, automatic, compare, heatmap }) {
         <div class="inspector-footer"><span id="tensor-count">—</span><span id="timing">—</span></div>
       </section>
     </main>
-    <footer class="statusbar"><span class="runtime" id="runtime" data-state="connecting"><i></i><span id="runtime-label">连接执行服务</span></span><span>CPU</span><span>v0.4.0</span><span id="script-storage-status">浏览器本地存储</span><button id="status-help">快捷键</button></footer>
+    <footer class="statusbar"><span class="runtime" id="runtime" data-state="connecting"><i></i><span id="runtime-label">连接执行服务</span></span><span>CPU</span><span>v0.4.1</span><span id="script-storage-status">浏览器本地存储</span><button id="status-help">快捷键</button></footer>
   </div>
   <dialog id="library-dialog" class="library-dialog" aria-labelledby="library-title"><div class="dialog-header"><h2 id="library-title">示例</h2><button class="icon-button" data-close aria-label="关闭示例库">${icon('close')}</button></div><label class="search-field">${icon('search')}<input id="example-search" placeholder="搜索名称或算子" aria-label="搜索教学示例"></label><div id="example-categories" class="category-filters"></div><div id="library-results" class="library-grid"></div><div class="dialog-footer"><span>在新脚本中打开，不覆盖当前内容</span><span id="library-count"></span></div></dialog>
   <dialog id="command-dialog" class="command-dialog" aria-label="快捷指令"><label class="search-field">${icon('search')}<input id="command-search" placeholder="搜索命令或示例" aria-label="搜索快捷指令"><button class="icon-button" data-close aria-label="关闭快捷指令">${icon('close')}</button></label><div id="command-results"></div><div class="dialog-footer">↑ ↓ 选择 · Enter 执行 · Esc 关闭</div></dialog>

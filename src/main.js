@@ -1,5 +1,5 @@
 import { EditorView, Decoration, keymap } from '@codemirror/view';
-import { EditorState, StateField, StateEffect, Prec } from '@codemirror/state';
+import { EditorState, StateField, StateEffect, Prec, Compartment } from '@codemirror/state';
 import { indentWithTab, undo, isolateHistory } from '@codemirror/commands';
 import { python } from '@codemirror/lang-python';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
@@ -70,6 +70,9 @@ let referenceStep = null;
 let sourceRecord = null;
 const sourceImports = new Map();
 const experimentCache = new Map();
+const sourceReadOnly = new Compartment();
+let applyingSource = false;
+let pendingManual = false;
 let compare = readLocal('tensorv:compare', 'true') === 'true';
 let precision = Number(readLocal('tensorv:precision', '4')) || 4;
 let heatmap = readLocal('tensorv:heatmap', 'true') === 'true';
@@ -122,7 +125,7 @@ const pythonHighlight = HighlightStyle.define([
 function makeEditorState(code) {
   return EditorState.create({
     doc: code,
-    extensions: [basicSetup, python(), syntaxHighlighting(pythonHighlight), lineField, EditorView.contentAttributes.of({ 'aria-label': 'Python 代码编辑器' }), Prec.highest(keymap.of([{ key: 'Mod-Enter', run: () => { runCurrent(); return true; } }])), keymap.of([indentWithTab]),
+    extensions: [basicSetup, sourceReadOnly.of([]), python(), syntaxHighlighting(pythonHighlight), lineField, EditorView.contentAttributes.of({ 'aria-label': 'Python 代码编辑器' }), Prec.highest(keymap.of([{ key: 'Mod-Enter', run: () => { runCurrent(); return true; } }])), keymap.of([indentWithTab]),
       EditorView.theme({ '&': { fontSize: '13px', height: '100%' }, '.cm-scroller': { fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace', lineHeight: '1.8' }, '.cm-content': { padding: '14px 0' }, '.cm-gutters': { background: 'var(--editor-bg)', color: 'var(--muted)', border: 'none', padding: '0 5px 0 8px' }, '.cm-activeLineGutter': { background: 'var(--accent-soft)', color: 'var(--accent)' }, '.cm-activeLine': { background: 'var(--active-line)' }, '.cm-selectionBackground': { background: 'var(--selection) !important' }, '&.cm-focused': { outline: 'none' }, '.cm-line': { padding: '0 16px 0 10px' }, '.cm-cursor': { borderLeftColor: 'var(--text)' } }),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
@@ -136,7 +139,7 @@ function makeEditorState(code) {
           updateSession();
           markStatus('待更新', 'pending');
           clearTimeout(timer);
-          if (automatic) timer = setTimeout(execute, 650);
+          if (automatic && !applyingSource) scheduleExecution();
           updatePlayback();
         } else if (update.selectionSet && result && !stale && !busy) {
           const line = update.state.doc.lineAt(update.state.selection.main.head).number;
@@ -168,36 +171,56 @@ async function api(path, payload) {
   if (!response.ok) throw new Error(data.message || '执行失败');
   return data;
 }
-async function execute() {
+function scheduleExecution() {
   clearTimeout(timer);
+  timer = setTimeout(() => { timer = null; execute(); }, 650);
+}
+function queueLatestRun(manual = false) {
+  if (manual) { pending = true; pendingManual = true; }
+  else if (automatic && !timer) pending = true;
+}
+async function execute({ manual = false } = {}) {
+  clearTimeout(timer); timer = null;
   if (scripts.current().reviewRequired) {
-    pending = false;
+    pending = false; pendingManual = false;
     markStatus('待运行 · 外部实验', 'pending');
     return;
   }
-  if (busy) { pending = true; return; }
+  if (activeFileSource()?.unavailable) { markStatus('源码不可用', 'error'); return; }
+  if (busy) { pending = true; pendingManual ||= manual; return; }
   stopPlayback();
   busy = true;
   stale = true;
   renderVersion++;
   $('#canvases').classList.add('stale');
   updatePlayback();
-  pending = false;
-  const thisRevision = revision;
-  const code = editor.state.doc.toString();
+  pending = false; pendingManual = false;
+  const scriptId = editingScriptId;
+  const sourceId = activeFileSource()?.id;
+  let thisRevision = revision;
+  let code = editor.state.doc.toString();
   $('#run').disabled = true;
   $('#run').innerHTML = '<span class="spinner"></span>执行中';
   markStatus('正在执行', 'pending');
+  updateSourceStatus();
   try {
-    const next = await api('execute', { code });
-    $('#runtime').dataset.state = 'ready';
-    $('#runtime-label').textContent = `PyTorch ${next.torch_version}${next.execution_mode === 'isolated' ? ' · 隔离执行' : ''}`;
+    if (sourceId) {
+      const fresh = await host.getSource(sourceId);
+      if (scriptId !== editingScriptId || activeFileSource()?.id !== sourceId) return;
+      if (sourceRecord.version > fresh.source.version) { queueLatestRun(manual); return; }
+      applySourceUpdate(fresh, false);
+      clearTimeout(timer); timer = null;
+      thisRevision = revision;
+      code = editor.state.doc.toString();
+    }
+    const next = await api('execute', { code, ...(sourceId ? { sourceId, sourceVersion: sourceRecord.version } : {}) });
+    if (scriptId !== editingScriptId || (sourceId && activeFileSource()?.id !== sourceId)) return;
     if (thisRevision !== revision) {
-      // A new run replaces worker snapshots, even if its response is obsolete.
-      pending = pending || automatic;
+      queueLatestRun();
       markStatus('待更新', 'pending');
       return;
     }
+    $('#runtime').dataset.state = 'ready';
     $('#runtime-label').textContent = `PyTorch ${next.torch_version}${next.execution_mode === 'isolated' ? ' · 隔离执行' : ''}`;
     $('#console').textContent = next.stdout || '没有输出。使用 print(...) 查看文本结果。';
     $('#output-count').textContent = next.stdout ? next.stdout.trimEnd().split('\n').length : '0';
@@ -211,19 +234,20 @@ async function execute() {
       configCache.clear();
       sliceCache.clear();
       await restoreExperiment(next, thisRevision, code);
-      if (thisRevision !== revision) { pending = pending || automatic; return; }
+      if (thisRevision !== revision) { queueLatestRun(); return; }
       stale = false;
       render();
     } else {
       stale = true;
-      // Retain the rendered last-successful state, whose worker IDs have expired.
       $('#canvases').classList.add('stale');
       $('#step-count').textContent = '保留上次成功画面';
     }
     markStatus(next.error ? `第 ${next.error.line} 行出错` : '已更新', next.error ? 'error' : 'success');
     $('#timing').innerHTML = `${icon('clock')}${next.elapsed_ms} ms`;
   } catch (error) {
-    if (thisRevision !== revision) { pending = pending || automatic; return; }
+    if (scriptId !== editingScriptId || (sourceId && activeFileSource()?.id !== sourceId)) return;
+    if (error.code === 'SOURCE_CHANGED') { queueLatestRun(manual); markStatus('源码已修改 · 待更新', 'pending'); return; }
+    if (thisRevision !== revision) { queueLatestRun(); return; }
     stale = true;
     $('#runtime').dataset.state = 'error';
     $('#runtime-label').textContent = '服务未就绪';
@@ -234,14 +258,64 @@ async function execute() {
     busy = false;
     $('#run').disabled = false;
     $('#run').innerHTML = `${icon('play')}运行<kbd>${shortcut} ↵</kbd>`;
-    updatePlayback();
-    if (pending) { pending = false; execute(); }
+    updatePlayback(); updateSourceStatus();
+    if (pending) {
+      const queuedManual = pendingManual;
+      pending = false; pendingManual = false;
+      if (queuedManual || !timer) execute({ manual: queuedManual });
+    }
   }
 }
 function runCurrent() {
   scripts.approveCurrent();
   updateSession();
-  return execute();
+  return execute({ manual: true });
+}
+function activeFileSource() {
+  return host && sourceRecord?.mode === 'file' && sourceRecord.id && sourceRecord.scriptId === editingScriptId ? sourceRecord : null;
+}
+function updateSourceStatus() {
+  const source = activeFileSource();
+  $('#source-bar').hidden = !source;
+  if (!source) return;
+  $('#source-state').textContent = `源码联动 · ${source.unavailable ? '源码不可用' : busy ? '运行中' : stale ? '待更新' : result ? '已更新' : '等待运行'}`;
+  $('#source-file').textContent = scripts.current().name;
+  $('#source-file').title = source.uri || '';
+  $('#edit-source').disabled = Boolean(source.unavailable);
+}
+function applySourceUpdate(message, schedule = true) {
+  const current = activeFileSource();
+  if (!current || message.source?.id !== current.id || !Number.isInteger(message.source.version)
+      || message.source.version < current.version || typeof message.code !== 'string' || message.code.length > 20000) return;
+  const changed = message.code !== editor.state.doc.toString();
+  const changedVersion = message.source.version !== current.version || current.unavailable;
+  sourceRecord = { ...current, ...message.source, code: message.code, unavailable: false };
+  if (changed) {
+    applyingSource = true;
+    try { editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: message.code } }); }
+    finally { applyingSource = false; }
+  } else if (changedVersion) {
+    revision++; renderVersion++; stale = true;
+    $('#canvases').classList.add('stale');
+  }
+  sourceImports.set(current.importKey, { id: editingScriptId, code: message.code });
+  if (changed || changedVersion) {
+    showError(null);
+    markStatus('源码已修改 · 待更新', 'pending');
+    if (schedule && automatic) scheduleExecution();
+  }
+  updateSession(); updatePlayback();
+}
+function markSourceUnavailable(message) {
+  if (!activeFileSource() || message.source?.id !== sourceRecord.id) return;
+  sourceRecord.unavailable = true;
+  if (Number.isInteger(message.source.version)) sourceRecord.version = Math.max(sourceRecord.version, message.source.version);
+  clearTimeout(timer); timer = null; pending = false; pendingManual = false;
+  revision++; renderVersion++; stale = true;
+  $('#canvases').classList.add('stale');
+  showError({ type: '源码联动', message: message.message || '源文件不可用，请从源文件重新运行。' });
+  markStatus('源码不可用', 'error');
+  updateSession(); updatePlayback();
 }
 function showError(error) {
   const el = $('#error-box');
@@ -298,7 +372,7 @@ function render() {
   const selectedLines = [];
   for (let line = step.line; line <= step.end_line; line++) selectedLines.push(line);
   editor.dispatch({ effects: activeLine.of(selectedLines) });
-  const linkedSource = host && sourceRecord?.scriptId === editingScriptId && sourceRecord.code === editor.state.doc.toString();
+  const linkedSource = host && sourceRecord?.scriptId === editingScriptId && !stale && sourceRecord.code === editor.state.doc.toString();
   $('#step-heading').innerHTML = `<div class="step-caption"><span class="section-label">${icon('code')}当前操作</span>${linkedSource ? `<button class="text-button" id="reveal-source" title="在 VS Code 中定位当前语句">返回源码 ${icon('external')}</button>` : ''}<span class="line-label">第 ${step.line} 行</span></div><code class="operation-code">${escape(step.source)}</code>`;
   if ($('#reveal-source')) $('#reveal-source').onclick = () => host.revealLine(step.line);
   $('#canvases').classList.toggle('single', !compare || !before);
@@ -318,7 +392,7 @@ function experimentNotice(message) {
   $('#experiment-notice').hidden = !message;
 }
 function pauseForImport() {
-  stopPlayback(); clearTimeout(timer); pending = false;
+  stopPlayback(); clearTimeout(timer); timer = null; pending = false; pendingManual = false;
   automatic = false;
   saveLocal('tensorv:auto', 'false');
   $('#auto').setAttribute('aria-checked', 'false');
@@ -362,7 +436,7 @@ function captureExperiment() {
   };
   return validateExperiment({ format: 'tensorv-experiment', version: 1,
     title: scripts.current().name, code: editor.state.doc.toString(),
-    environment: { app: '0.4.0', torch: result?.torch_version || null },
+    environment: { app: '0.4.1', torch: result?.torch_version || null },
     view: { step: ready ? stepOf(selected) : null, referenceStep: ready && referenceStep !== null ? stepOf(referenceStep) : null,
       before: viewOf('before'), after: viewOf('after'), compare, heatmap, precision, tab: activeTab } });
 }
@@ -699,9 +773,10 @@ function updateSession() {
   document.title = `${current.name} — TensorV`;
   const codeMatches = current.code === editor.state.doc.toString();
   $('#document-state').textContent = !codeMatches ? '超出长度上限 · 未保存' : scripts.persisted ? '已保存' : '未保存';
-  $('#script-storage-status').textContent = scripts.persisted ? (host ? 'VS Code 面板副本' : '浏览器本地存储') : '存储不可用 · 请下载代码';
-  $('#reset').disabled = !resetExample;
-  if ($('#reveal-source')) $('#reveal-source').hidden = sourceRecord?.scriptId !== editingScriptId || sourceRecord.code !== editor.state.doc.toString();
+  $('#script-storage-status').textContent = activeFileSource() ? 'VS Code 源码联动' : scripts.persisted ? (host ? 'VS Code 面板副本' : '浏览器本地存储') : '存储不可用 · 请下载代码';
+  updateSourceStatus();
+  $('#reset').disabled = !resetExample || Boolean(activeFileSource());
+  if ($('#reveal-source')) $('#reveal-source').hidden = stale || sourceRecord?.scriptId !== editingScriptId || sourceRecord.code !== editor.state.doc.toString();
   document.querySelectorAll('#sidebar-examples [data-example]').forEach((button) => {
     button.classList.toggle('active', button.dataset.example === activeExample);
     button.setAttribute('aria-current', button.dataset.example === activeExample ? 'true' : 'false');
@@ -719,11 +794,14 @@ function flushDraft() {
   catch (error) { toast(`${error.message} 请先下载或缩短当前代码。`); return false; }
 }
 function activateScript(script, { run = true } = {}) {
-  stopPlayback(); clearTimeout(timer);
-  pending = false;
+  stopPlayback(); clearTimeout(timer); timer = null;
+  pending = false; pendingManual = false;
   revision++;
   editingScriptId = script.id;
   editor.setState(editorStates.get(script.id) || makeEditorState(script.code));
+  const linked = activeFileSource();
+  editor.dispatch({ effects: sourceReadOnly.reconfigure(linked ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) });
+  host?.bindSource(linked?.id || null);
   editor.dispatch({ effects: activeLine.of([]) });
   activeExample = examples.find((e) => e.code === script.code)?.id;
   resetExample = readLocal(`tensorv:lesson:${script.id}`, activeExample || '');
@@ -737,7 +815,7 @@ function activateScript(script, { run = true } = {}) {
   showError(null); renderScriptList(); updateSession(); render(); closeSidebar();
   experimentNotice(script.reviewRequired ? '已导入外部实验。请检查代码，再点击运行以还原查看位置。' : '');
   setMobileView('editor');
-  if (run) execute();
+  if (run) execute({ manual: true });
   else markStatus('待运行 · 外部实验', 'pending');
 }
 function openScript(id) {
@@ -901,13 +979,14 @@ function runCommand(index) { $('#command-dialog').close(); filteredCommands[inde
 function openCommands() { commandIndex = 0; $('#command-search').value = ''; renderCommands(); openDialog('#command-dialog'); $('#command-search').focus(); }
 
 $('#run').onclick = runCurrent;
+$('#edit-source').onclick = () => { const source = activeFileSource(); if (source) host.editSource(source.id); };
 $('#auto').onclick = () => {
   automatic = !automatic;
   saveLocal('tensorv:auto', String(automatic));
   $('#auto').setAttribute('aria-checked', String(automatic));
   $('#auto .switch').classList.toggle('on', automatic);
   if (automatic && (stale || scripts.current().reviewRequired)) runCurrent();
-  else if (!automatic) clearTimeout(timer);
+  else if (!automatic) { clearTimeout(timer); timer = null; pending = false; pendingManual = false; }
 };
 $('#compare').onclick = () => {
   compare = !compare;
@@ -1077,9 +1156,11 @@ if (host) {
   }
   followTheme();
   new MutationObserver(followTheme).observe(document.body, { attributes: true, attributeFilter: ['data-vscode-theme-id'] });
+  host.onSourceChanged((message) => applySourceUpdate(message, true));
+  host.onSourceUnavailable(markSourceUnavailable);
   host.onImport((message) => {
     if (!flushDraft()) return;
-    const key = `${message.source?.uri || ''}:${message.source?.lineOffset || 0}`;
+    const key = `${message.source?.mode || 'selection'}:${message.source?.uri || ''}:${message.source?.lineOffset || 0}`;
     const previous = sourceImports.get(key);
     const existing = scripts.list().find((item) => item.id === previous?.id && item.code === previous.code);
     editorStates.set(editingScriptId, editor.state);
@@ -1091,7 +1172,7 @@ if (host) {
         editorStates.delete(script.id);
       } else script = scripts.create(message.title || 'source.py', message.code);
     } catch (error) { toast(error.message); return; }
-    sourceRecord = { scriptId: script.id, code: message.code };
+    sourceRecord = { ...message.source, scriptId: script.id, code: message.code, importKey: key, unavailable: false };
     sourceImports.set(key, { id: script.id, code: message.code });
     activateScript(script);
     setMobileView('inspector');

@@ -5,6 +5,9 @@ export function createVSCodeHost(vscode, target) {
   let sequence = 0;
   let importHandler;
   let experimentHandler;
+  let sourceChangedHandler;
+  let sourceUnavailableHandler;
+  let queuedSourceStatus;
   let queuedContent;
   function request(type, payload, timeoutMessage, timeout = 45000) {
     return new Promise((resolve, reject) => {
@@ -27,7 +30,7 @@ export function createVSCodeHost(vscode, target) {
       pending.delete(message.id);
       clearTimeout(request.timer);
       if (message.ok) request.resolve(message.data);
-      else request.reject(new Error(message.message || '本地 Python 执行失败。'));
+      else request.reject(Object.assign(new Error(message.message || '本地 Python 执行失败。'), { code: message.code }));
     } else if (message.type === 'tensorv:import' && typeof message.code === 'string' && message.code.length <= 20000) {
       queuedContent = null;
       if (importHandler) importHandler(message);
@@ -36,6 +39,14 @@ export function createVSCodeHost(vscode, target) {
       queuedContent = null;
       if (experimentHandler) experimentHandler(message);
       else queuedContent = message;
+    } else if (message.type === 'tensorv:sourceChanged' && typeof message.source?.id === 'string' && typeof message.code === 'string' && message.code.length <= 20000) {
+      queuedSourceStatus = null;
+      if (sourceChangedHandler) sourceChangedHandler(message);
+      else queuedSourceStatus = message;
+    } else if (message.type === 'tensorv:sourceUnavailable' && typeof message.source?.id === 'string') {
+      queuedSourceStatus = null;
+      if (sourceUnavailableHandler) sourceUnavailableHandler(message);
+      else queuedSourceStatus = message;
     }
   });
   return {
@@ -59,6 +70,19 @@ export function createVSCodeHost(vscode, target) {
     onExperiment(handler) {
       experimentHandler = handler;
       if (queuedContent?.type === 'tensorv:experiment') { const message = queuedContent; queuedContent = null; handler(message); }
+    },
+    onSourceChanged(handler) {
+      sourceChangedHandler = handler;
+      if (queuedSourceStatus?.type === 'tensorv:sourceChanged') { const message = queuedSourceStatus; queuedSourceStatus = null; handler(message); }
+    },
+    onSourceUnavailable(handler) {
+      sourceUnavailableHandler = handler;
+      if (queuedSourceStatus?.type === 'tensorv:sourceUnavailable') { const message = queuedSourceStatus; queuedSourceStatus = null; handler(message); }
+    },
+    bindSource(sourceId) { vscode.postMessage({ type: 'tensorv:bindSource', sourceId }); },
+    editSource(sourceId) { vscode.postMessage({ type: 'tensorv:editSource', sourceId }); },
+    getSource(sourceId) {
+      return request('tensorv:request', { action: 'getSource', payload: { sourceId } }, '源文件同步未响应，请重新从 Python 编辑器运行。', 10000);
     },
     openExperiment() { vscode.postMessage({ type: 'tensorv:openExperiment' }); },
     ready() { vscode.postMessage({ type: 'tensorv:ready' }); },

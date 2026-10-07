@@ -6,6 +6,7 @@ const path = require('node:path');
 const { BridgeClient } = require('./lib/bridge-client.cjs');
 const { webviewHtml, ImportQueue } = require('./lib/webview.cjs');
 const { readExperimentText, MAX_EXPERIMENT_BYTES } = require('./lib/experiments.cjs');
+const { SourceBinding, sourceError } = require('./lib/source-binding.cjs');
 
 let controller;
 
@@ -19,6 +20,11 @@ class TensorVController {
     this.source = null;
     this.generation = 0;
     this.requestChain = Promise.resolve();
+    this.bindings = new SourceBinding(message => {
+      if (message.type === 'tensorv:sourceUnavailable' && this.source?.id === message.source.id) this.source = null;
+      if (!this.bindings.record) { this.sourceFileWatcher?.dispose(); this.sourceFileWatcher = null; }
+      if (this.panel) void Promise.resolve(this.panel.webview.postMessage(message)).catch(error => this.output.appendLine(error.message));
+    });
     context.subscriptions.push(this.output);
   }
 
@@ -32,6 +38,17 @@ class TensorVController {
 
   folder(resource = this.resource()) {
     return (resource && vscode.workspace.getWorkspaceFolder(resource)) || vscode.workspace.workspaceFolders?.[0];
+  }
+
+  readSource(id, expectedVersion) {
+    const document = this.bindings.document(id);
+    // File watcher notifications can lag behind an execution click. A deleted
+    // file must not remain executable merely because its editor buffer exists.
+    if (document.uri.scheme === 'file' && !fs.existsSync(document.uri.fsPath)) {
+      this.bindings.removed(document.uri);
+      throw sourceError('源文件已删除，请选择其他 Python 文件。');
+    }
+    return this.bindings.read(id, expectedVersion);
   }
 
   async interpreter(resource) {
@@ -101,10 +118,23 @@ class TensorVController {
       return delivered;
     });
     this.importRecords = new WeakMap();
+    const sourceSubscriptions = [
+      vscode.workspace.onDidChangeTextDocument(event => {
+        if (event.contentChanges.length) this.bindings.changed(event.document);
+      }),
+      vscode.workspace.onDidCloseTextDocument(document => this.bindings.closed(document)),
+      vscode.window.tabGroups.onDidChangeTabs(event => this.bindings.tabsChanged(event, vscode.window.tabGroups.all)),
+      vscode.workspace.onDidDeleteFiles(event => event.files.forEach(uri => this.bindings.removed(uri))),
+      vscode.workspace.onDidRenameFiles(event => event.files.forEach(file => this.bindings.removed(file.oldUri, true))),
+    ];
     panel.onDidDispose(() => {
+      for (const subscription of sourceSubscriptions) subscription.dispose();
       if (this.panel !== panel) return;
       this.panel = null;
       this.source = null;
+      this.bindings.retire('检查器已关闭。', false);
+      this.sourceFileWatcher?.dispose();
+      this.sourceFileWatcher = null;
       void this.restart(false);
     }, null, this.context.subscriptions);
     panel.webview.onDidReceiveMessage(message => {
@@ -130,13 +160,19 @@ class TensorVController {
     const code = selectionOnly ? editor.document.getText(editor.selection) : editor.document.getText();
     if (!code.trim()) throw new Error('当前 Python 代码为空。');
     if (code.length > 20_000) throw new Error('代码超过 20,000 字符，请选择较小的片段运行。');
-    const record = {
-      uri: editor.document.uri, version: editor.document.version,
-      lineOffset: selectionOnly ? editor.selection.start.line : 0,
-    };
-    const title = path.basename(editor.document.fileName) + (selectionOnly ? ` · 选区 L${record.lineOffset + 1}` : '');
-    const message = { type: 'tensorv:import', code, title, source: { uri: record.uri.toString(), lineOffset: record.lineOffset } };
     this.open();
+    const source = this.bindings.replace(editor.document, {
+      mode: selectionOnly ? 'selection' : 'file', lineOffset: selectionOnly ? editor.selection.start.line : 0,
+    });
+    if (!selectionOnly && editor.document.uri.scheme === 'file') {
+      this.sourceFileWatcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(path.dirname(editor.document.uri.fsPath), '*'), true, true, false,
+      );
+      this.sourceFileWatcher.onDidDelete(uri => this.bindings.removed(uri));
+    }
+    const record = { ...source, uri: editor.document.uri };
+    const title = path.basename(editor.document.fileName) + (selectionOnly ? ` · 选区 L${record.lineOffset + 1}` : '');
+    const message = { type: 'tensorv:import', code, title, source };
     this.importRecords.set(message, record);
     await this.imports.enqueue(message);
   }
@@ -152,12 +188,27 @@ class TensorVController {
     // No Python execution occurs here. The frontend validates JSON and waits
     // for a separate, explicit Run action.
     this.open();
+    this.bindings.retire('已打开实验副本，先前的源文件绑定已结束。');
     await this.imports.enqueue({ type: 'tensorv:experiment', text });
   }
 
   async onMessage(message, panel) {
     if (!message || typeof message !== 'object' || panel !== this.panel) return;
     if (message.type === 'tensorv:ready') { await this.imports.markReady(); return; }
+    if (message.type === 'tensorv:bindSource') {
+      try {
+        this.bindings.bind(message.sourceId);
+        if (message.sourceId === null && this.source?.mode === 'file') this.source = null;
+      } catch (error) {
+        if (error.code !== 'SOURCE_UNAVAILABLE') throw error;
+      }
+      return;
+    }
+    if (message.type === 'tensorv:editSource') {
+      const document = this.bindings.document(message.sourceId, false);
+      await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One });
+      return;
+    }
     if (message.type === 'tensorv:openExperiment') { await this.openExperiment(); return; }
     if (message.type === 'tensorv:copy') {
       if (!['string', 'number'].includes(typeof message.id)) return;
@@ -174,6 +225,16 @@ class TensorVController {
     }
     if (message.type === 'tensorv:request') {
       if (!['string', 'number'].includes(typeof message.id)) return;
+      if (message.action === 'getSource') {
+        try {
+          this.trusted();
+          const data = this.readSource(message.payload?.sourceId);
+          await panel.webview.postMessage({ type: 'tensorv:response', id: message.id, ok: true, data });
+        } catch (error) {
+          await panel.webview.postMessage({ type: 'tensorv:response', id: message.id, ok: false, message: error.message, code: error.code });
+        }
+        return;
+      }
       const generation = this.generation;
       const resource = this.resource();
       // Serial execution preserves the Runner's snapshot ordering, including
@@ -185,10 +246,25 @@ class TensorVController {
           if (!['execute', 'slice'].includes(message.action) || !message.payload || typeof message.payload !== 'object' || Array.isArray(message.payload)) {
             throw new Error('无效的 TensorV 请求。');
           }
-          if (message.action === 'execute' && (typeof message.payload.code !== 'string' || message.payload.code.length > 20_000)) {
+          const linked = message.action === 'execute' && Object.hasOwn(message.payload, 'sourceId');
+          if (linked && !Number.isInteger(message.payload.sourceVersion)) throw sourceError('缺少源文件版本，请同步源文件后重新运行。', 'SOURCE_CHANGED');
+          if (message.action === 'execute' && !linked && (typeof message.payload.code !== 'string' || message.payload.code.length > 20_000)) {
             throw new Error('代码必须是文本，且不超过 20,000 字符。');
           }
-          const data = await (await this.getBridge(resource)).request(message.action, message.payload);
+          if (linked) this.readSource(message.payload.sourceId, message.payload.sourceVersion);
+          const executionResource = linked ? this.bindings.document(message.payload.sourceId).uri : resource;
+          const bridge = await this.getBridge(executionResource);
+          if (panel !== this.panel || generation !== this.generation) throw new Error('检查器已关闭或执行环境已重置，请重新运行。');
+          // Read again after asynchronous interpreter discovery, immediately
+          // before sending to Python. A request can never run a stale mirror.
+          const snapshot = linked ? this.readSource(message.payload.sourceId, message.payload.sourceVersion) : null;
+          let data = await bridge.request(message.action, snapshot ? { code: snapshot.code } : message.payload);
+          if (snapshot) {
+            data = { ...data, source: { ...snapshot.source, code: snapshot.code } };
+            if (this.bindings.active && this.bindings.record?.id === snapshot.source.id) {
+              this.source = { ...snapshot.source, uri: executionResource };
+            }
+          }
           await panel.webview.postMessage({ type: 'tensorv:response', id: message.id, ok: true, data });
         } catch (error) {
           let detail = error.message;
@@ -196,7 +272,7 @@ class TensorVController {
             detail += '\n在所选解释器的终端中安装 torch 和 numpy（python -m pip install torch numpy），或执行“TensorV: 选择 Python 解释器”选择已有依赖的环境。';
           }
           this.output.appendLine(detail);
-          await panel.webview.postMessage({ type: 'tensorv:response', id: message.id, ok: false, message: detail });
+          await panel.webview.postMessage({ type: 'tensorv:response', id: message.id, ok: false, message: detail, code: error.code });
         }
       };
       this.requestChain = this.requestChain.then(execute, execute);
@@ -282,7 +358,7 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
     if (event.affectsConfiguration('tensorv.pythonPath')) void controller.restart(false);
   }));
-  return { version: '0.4.0' };
+  return { version: '0.4.1' };
 }
 
 async function deactivate() { await controller?.dispose(); }
